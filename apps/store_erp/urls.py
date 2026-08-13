@@ -28,7 +28,12 @@ from .views import (
     LeaderboardView, FinancialReportView,
     ServiceProductViewSet, StockTransferViewSet, ReferralViewSet,
     WaitlistViewSet, CustomerCRMViewSet, StaffViewSet, StaffTrainingViewSet,
-    KycOnboardingViewSet
+    KycOnboardingViewSet, OutletAvailabilityView, BookingViewSet,
+    ProfessionalViewSet, ResourceViewSet, StoreServiceListView, CustomerLookupView,
+    MembershipPlanViewSet, MembershipViewSet, PackagePlanViewSet, PackageViewSet,
+    CampaignViewSet, Phase1FinancialReportsView, CommissionRuleViewSet,
+    MeView, ChangePasswordView, StoreProfileView,
+    NotificationsView, GlobalSearchView
 )
 router = DefaultRouter()
 router.register(r'staff', StaffViewSet, basename='staff')
@@ -65,8 +70,26 @@ router.register(r'referrals', ReferralViewSet, basename='referral')
 router.register(r'waitlist', WaitlistViewSet, basename='waitlist')
 router.register(r'crm', CustomerCRMViewSet, basename='customer-crm')
 router.register(r'kyc', KycOnboardingViewSet, basename='kyc-onboarding')
+router.register(r'bookings', BookingViewSet, basename='booking')
+router.register(r'professionals', ProfessionalViewSet, basename='professional')
+router.register(r'resources', ResourceViewSet, basename='resource')
+router.register(r'membership-plans', MembershipPlanViewSet, basename='membership-plan')
+router.register(r'customer-memberships', MembershipViewSet, basename='customer-membership')
+router.register(r'package-plans', PackagePlanViewSet, basename='package-plan')
+router.register(r'packages', PackageViewSet, basename='package')
+router.register(r'crm-campaigns', CampaignViewSet, basename='crm-campaign')
+router.register(r'commission-rules', CommissionRuleViewSet, basename='commission-rule')
 urlpatterns = [
     path('', include(router.urls)),
     path('leaderboard/', LeaderboardView.as_view(), name='erp-leaderboard'),
     path('financial-reports/', FinancialReportView.as_view(), name='erp-financial-reports'),
+    path('reports/', Phase1FinancialReportsView.as_view(), name='phase1-financial-reports'),
+    path('outlets/<uuid:outlet_id>/availability/', OutletAvailabilityView.as_view(), name='outlet-availability'),
+    path('store-services/', StoreServiceListView.as_view(), name='store-service-list'),
+    path('customers/find-or-create/', CustomerLookupView.as_view(), name='customer-find-or-create'),
+    path('me/', MeView.as_view(), name='erp-me'),
+    path('me/change-password/', ChangePasswordView.as_view(), name='erp-change-password'),
+    path('store-profile/', StoreProfileView.as_view(), name='erp-store-profile'),
+    path('notifications/', NotificationsView.as_view(), name='erp-notifications'),
+    path('search/', GlobalSearchView.as_view(), name='erp-global-search'),
 ]

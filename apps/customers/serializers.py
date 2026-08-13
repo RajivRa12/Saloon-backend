@@ -8,9 +8,12 @@ from apps.core.models import (
 )
 class PublicStoreSerializer(serializers.ModelSerializer):
     brand_name = serializers.CharField(source='brand.name', read_only=True)
+    has_online_booking = serializers.SerializerMethodField()
     class Meta:
         model = Store
-        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email']
+        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email', 'has_online_booking']
+    def get_has_online_booking(self, obj):
+        return obj.outlet_id is not None
 class PublicServiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Service
@@ -118,3 +121,21 @@ class PublicTherapistSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'first_name', 'last_name']
+from apps.core.models import StoreService, Professional
+class Phase1StoreServiceSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='canonical_service.category.name', read_only=True, default=None)
+    skill_tag = serializers.CharField(source='canonical_service.skill_tag', read_only=True, default=None)
+    class Meta:
+        model = StoreService
+        fields = ['id', 'name', 'default_price_paise', 'duration_min', 'category_name', 'skill_tag']
+        read_only_fields = fields
+class Phase1ProfessionalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Professional
+        fields = ['id', 'display_name', 'display_role']
+        read_only_fields = fields
+class Phase1BookingRequestSerializer(serializers.Serializer):
+    store_service_id = serializers.UUIDField()
+    professional_id = serializers.UUIDField(required=False, allow_null=True)
+    slot_start = serializers.DateTimeField()
+    slot_end = serializers.DateTimeField()

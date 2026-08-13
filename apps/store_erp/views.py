@@ -28,6 +28,8 @@ def get_request_outlet(request):
     return Outlet.objects.first()
 def success_response(data, message="Success", status_code=200):
     return Response({"success": True, "message": message, "data": data}, status=status_code)
+def error_response(message="Error", status_code=400):
+    return Response({"success": False, "message": message, "data": None}, status=status_code)
 class ServiceCategoryViewSet(viewsets.ModelViewSet):
     serializer_class = ServiceCategorySerializer
     permission_classes = [IsAuthenticated, IsStoreStaff]
@@ -178,8 +180,8 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                         )
         return response
 from decimal import Decimal
-from apps.core.models import Invoice, InvoiceItem, Payment, Tip, PlatformSettings, InvoiceStatus
-from .serializers import InvoiceSerializer, CheckoutPaymentSerializer
+from apps.core.models import Invoice, InvoiceItem, Payment, Tip, PlatformSettings, InvoiceStatus, CommissionAccrual
+from .serializers import InvoiceSerializer, CheckoutPaymentSerializer, CreditNoteSerializer
 class InvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = InvoiceSerializer
     permission_classes = [IsStoreStaff]
@@ -187,6 +189,18 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return Invoice.objects.filter(store=self.request.user.store)
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
+    def retrieve(self, request, *args, **kwargs):
+        return success_response(self.get_serializer(self.get_object()).data)
+    def update(self, request, *args, **kwargs):
+        if self.get_object().finalised_at:
+            return error_response("Invoice is finalised and cannot be modified.", 403)
+        response = super().update(request, *args, **kwargs)
+        return success_response(response.data, "Invoice updated")
+    def partial_update(self, request, *args, **kwargs):
+        if self.get_object().finalised_at:
+            return error_response("Invoice is finalised and cannot be modified.", 403)
+        response = super().partial_update(request, *args, **kwargs)
+        return success_response(response.data, "Invoice updated")
     @action(detail=False, methods=['post'])
     @transaction.atomic
     def generate(self, request):
@@ -308,6 +322,184 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         invoice.status = InvoiceStatus.REFUNDED
         invoice.save()
         return success_response(InvoiceSerializer(invoice).data, "Invoice Refunded successfully", 200)
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def finalise(self, request, pk=None):
+        from apps.core.models import Outlet, CommissionAppliesTo
+        from .commission import find_commission_rule, commission_paise_for_rule
+        from .inventory import deduct_stock_for_invoice
+        invoice = self.get_object()
+        if invoice.finalised_at:
+            return error_response("Invoice is already finalised.", 400)
+        if not invoice.outlet_id:
+            return error_response("Invoice has no outlet assigned; cannot generate a sequential invoice number.", 400)
+        locked_outlet = Outlet.objects.select_for_update().get(pk=invoice.outlet_id)
+        invoice.invoice_number = Invoice.generate_invoice_number(locked_outlet)
+        invoice.finalised_at = timezone.now()
+        if not invoice.created_by_id:
+            invoice.created_by = request.user
+        invoice.save()
+        for item in invoice.items.select_related('professional').all():
+            if not item.professional_id:
+                continue
+            rule = find_commission_rule(locked_outlet.store_group, item.professional, CommissionAppliesTo.SERVICE, invoice.finalised_at.date())
+            if not rule:
+                continue
+            base_paise = int(item.price * 100)
+            CommissionAccrual.objects.create(
+                invoice_line=item, professional=item.professional,
+                base_paise=base_paise, commission_paise=commission_paise_for_rule(rule, base_paise),
+            )
+        deduct_stock_for_invoice(invoice)
+        return success_response(InvoiceSerializer(invoice).data, "Invoice finalised")
+    @action(detail=True, methods=['post'], url_path='credit-note')
+    def credit_note(self, request, pk=None):
+        invoice = self.get_object()
+        if not invoice.finalised_at:
+            return error_response("Only a finalised invoice can receive a credit note.", 400)
+        serializer = CreditNoteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        note = serializer.save(invoice=invoice, created_by=request.user)
+        return success_response(CreditNoteSerializer(note).data, "Credit note created", 201)
+    DISCOUNT_APPROVAL_THRESHOLD_PCT = Decimal('15')
+    @action(detail=False, methods=['post'])
+    @transaction.atomic
+    def checkout(self, request):
+        from apps.core.models import Booking, AppointmentSlotStatus, StoreService, GlobalCustomer, Professional, Membership, Package
+        today = timezone.localdate()
+        booking_id = request.data.get('booking_id')
+        manual_lines = request.data.get('lines') or []
+        discount_amount = Decimal(str(request.data.get('discount_amount', '0') or '0'))
+        is_discount_approved = bool(request.data.get('is_discount_approved', False))
+        payments_data = request.data.get('payments') or []
+        outlet = request.user.outlet
+        if not outlet:
+            return error_response("Your account has no outlet assigned; cannot raise a POS invoice.", 400)
+        booking = None
+        if booking_id:
+            try:
+                booking = Booking.objects.get(id=booking_id, outlet=outlet)
+            except Booking.DoesNotExist:
+                return error_response("Booking not found for this outlet.", 404)
+            if booking.invoices.exists():
+                return error_response("This booking already has an invoice.", 400)
+        global_customer = booking.customer if booking else None
+        if not global_customer and request.data.get('global_customer_id'):
+            global_customer = GlobalCustomer.objects.filter(id=request.data['global_customer_id']).first()
+        settings = PlatformSettings.objects.first()
+        tax_rate = settings.gst_percentage if settings else Decimal('18.00')
+        invoice = Invoice.objects.create(
+            invoice_number=f"DRAFT-{uuid.uuid4().hex[:8].upper()}",
+            store=request.user.store, outlet=outlet, booking=booking, global_customer=global_customer,
+            created_by=request.user, status=InvoiceStatus.UNPAID,
+        )
+        subtotal = Decimal('0.00')
+        tax_amount = Decimal('0.00')
+        def add_line(store_service, professional, price_override=None):
+            nonlocal subtotal, tax_amount
+            price = price_override if price_override is not None else (Decimal(store_service.default_price_paise) / Decimal('100'))
+            line_tax = (price * tax_rate) / Decimal('100.00')
+            InvoiceItem.objects.create(
+                invoice=invoice, store_service=store_service, professional=professional,
+                quantity=1, price=price, tax_rate=tax_rate, tax_amount=line_tax, total=price + line_tax,
+            )
+            subtotal += price
+            tax_amount += line_tax
+        if booking:
+            for slot in booking.slots.exclude(status=AppointmentSlotStatus.CANCELLED).select_related('store_service', 'professional'):
+                add_line(slot.store_service, slot.professional)
+        for line in manual_lines:
+            svc = StoreService.objects.filter(id=line.get('store_service_id'), store_group=outlet.store_group).first()
+            if not svc:
+                invoice.delete()
+                return error_response("One of the services in the cart is invalid.", 400)
+            professional = None
+            if line.get('professional_id'):
+                professional = Professional.objects.filter(id=line['professional_id'], outlet=outlet).first()
+            package_id = line.get('package_id')
+            if package_id:
+                if not global_customer:
+                    invoice.delete()
+                    return error_response("A customer is required to redeem a package.", 400)
+                package = Package.objects.filter(id=package_id, customer=global_customer).first()
+                if not package:
+                    invoice.delete()
+                    return error_response("Package not found for this customer.", 400)
+                if package.valid_until < today:
+                    invoice.delete()
+                    return error_response(f"Package '{package.name}' has expired.", 400)
+                remaining = package.service_credits.get(str(svc.id), 0)
+                if remaining <= 0:
+                    invoice.delete()
+                    return error_response(f"No remaining credits for '{svc.name}' in package '{package.name}'.", 400)
+                package.service_credits[str(svc.id)] = remaining - 1
+                package.save(update_fields=['service_credits'])
+                add_line(svc, professional, price_override=Decimal('0.00'))
+            else:
+                add_line(svc, professional)
+        if not invoice.items.exists():
+            invoice.delete()
+            return error_response("At least one service line is required.", 400)
+        discount_pct = (discount_amount / subtotal * 100) if subtotal > 0 else Decimal('0')
+        requires_approval = discount_pct > self.DISCOUNT_APPROVAL_THRESHOLD_PCT
+        if requires_approval and not is_discount_approved:
+            invoice.delete()
+            return error_response(
+                f"Discount of {discount_pct:.1f}% exceeds the {self.DISCOUNT_APPROVAL_THRESHOLD_PCT}% threshold and needs manager approval.", 400
+            )
+        invoice.subtotal = subtotal
+        invoice.discount_amount = discount_amount
+        invoice.tax_amount = tax_amount
+        invoice.grand_total = max(Decimal('0.00'), subtotal - discount_amount + tax_amount)
+        invoice.requires_manager_approval = requires_approval
+        invoice.is_discount_approved = is_discount_approved
+        invoice.save()
+        total_paid = Decimal('0.00')
+        for p in payments_data:
+            amount = Decimal(str(p.get('amount', '0')))
+            if amount <= 0:
+                continue
+            method = p.get('method', 'CASH')
+            reference = p.get('reference_id', '') or p.get('transaction_reference', '')
+            if method == 'MEMBERSHIP_CREDIT':
+                if not global_customer:
+                    invoice.delete()
+                    return error_response("A customer is required to redeem a membership.", 400)
+                membership = Membership.objects.filter(id=reference, customer=global_customer).first()
+                if not membership:
+                    invoice.delete()
+                    return error_response("Membership not found for this customer.", 400)
+                if membership.valid_until < today:
+                    invoice.delete()
+                    return error_response(f"Membership '{membership.plan_name}' has expired.", 400)
+                base_paise = int(amount * 100)
+                if membership.value_paise_remaining < base_paise:
+                    invoice.delete()
+                    return error_response(f"Insufficient balance on membership '{membership.plan_name}'.", 400)
+                membership.value_paise_remaining -= base_paise
+                membership.save(update_fields=['value_paise_remaining'])
+            elif method == 'GIFT_CARD':
+                from apps.core.models import GiftCard
+                gift_card = GiftCard.objects.filter(code__iexact=reference, store=request.user.store).first()
+                if not gift_card:
+                    invoice.delete()
+                    return error_response(f"Gift card '{reference}' not found.", 400)
+                if not gift_card.is_active or gift_card.expiry_date < today:
+                    invoice.delete()
+                    return error_response(f"Gift card '{reference}' is expired or inactive.", 400)
+                if gift_card.current_balance < amount:
+                    invoice.delete()
+                    return error_response(f"Insufficient balance on gift card '{reference}'.", 400)
+                gift_card.current_balance -= amount
+                gift_card.save(update_fields=['current_balance'])
+            Payment.objects.create(invoice=invoice, method=method, amount=amount, transaction_reference=reference)
+            total_paid += amount
+        if invoice.grand_total <= 0 or total_paid >= invoice.grand_total:
+            invoice.status = InvoiceStatus.PAID
+        elif total_paid > 0:
+            invoice.status = InvoiceStatus.PARTIALLY_PAID
+        invoice.save()
+        return success_response(InvoiceSerializer(invoice).data, "Invoice created", 201)
 from apps.core.models import MembershipTier, Role
 from .serializers import MembershipTierSerializer
 import datetime
@@ -368,7 +560,7 @@ class MembershipTierViewSet(viewsets.ModelViewSet):
         return MembershipTier.objects.filter(store=self.request.user.store)
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
-from apps.core.models import Vendor, Product, PurchaseOrder, POStatus
+from apps.core.models import Vendor, Product, PurchaseOrder, PurchaseOrderItem, POStatus
 from .serializers import VendorSerializer, ProductSerializer, PurchaseOrderSerializer
 class VendorViewSet(viewsets.ModelViewSet):
     serializer_class = VendorSerializer
@@ -391,6 +583,25 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         return PurchaseOrder.objects.filter(store=self.request.user.store)
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        from decimal import Decimal
+        from apps.core.models import Product
+        vendor_id = request.data.get('vendor')
+        items_data = request.data.get('items') or []
+        po = PurchaseOrder.objects.create(store=request.user.store, outlet=get_request_outlet(request), vendor_id=vendor_id or None)
+        total = Decimal('0.00')
+        for item in items_data:
+            product = Product.objects.filter(id=item.get('product')).first()
+            quantity = int(item.get('quantity') or 0)
+            if not product or quantity <= 0:
+                continue
+            unit_cost = Decimal(str(item.get('unit_cost') or '0'))
+            po_item = PurchaseOrderItem.objects.create(purchase_order=po, product=product, quantity=quantity, unit_cost=unit_cost)
+            total += po_item.total
+        po.total_amount = total
+        po.save()
+        return success_response(PurchaseOrderSerializer(po).data, "Purchase order created", 201)
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def receive(self, request, pk=None):
@@ -427,6 +638,7 @@ class DashboardViewSet(viewsets.ViewSet):
     permission_classes = [IsStoreStaff]
     def list(self, request):
         today = timezone.localtime().date()
+        yesterday = today - datetime.timedelta(days=1)
         store = request.user.store
         today_appointments = Appointment.objects.filter(store=store, start_time__date=today)
         appointments_count = today_appointments.exclude(status=AppointmentStatus.CANCELLED).count()
@@ -465,19 +677,76 @@ class DashboardViewSet(viewsets.ViewSet):
                 "date": str(day),
                 "revenue": day_revenue
             })
+
+        def pct_change(current, previous):
+            current = float(current)
+            previous = float(previous)
+            if previous == 0:
+                return 0.0
+            return round(((current - previous) / previous) * 100, 1)
+
+        yesterday_revenue = Invoice.objects.filter(
+            store=store, created_at__date=yesterday, status=InvoiceStatus.PAID
+        ).aggregate(Sum('grand_total'))['grand_total__sum'] or Decimal('0.00')
+        yesterday_appointments_count = Appointment.objects.filter(
+            store=store, start_time__date=yesterday
+        ).exclude(status=AppointmentStatus.CANCELLED).count()
+
+        top_staff_rows = (
+            AppointmentItem.objects.filter(
+                appointment__store=store,
+                appointment__start_time__date=today,
+                therapist__isnull=False,
+            )
+            .values('therapist_id', 'therapist__first_name', 'therapist__last_name')
+            .annotate(appointments=Count('appointment_id', distinct=True), revenue=Sum('price'))
+            .order_by('-revenue')[:5]
+        )
+        top_staff = [
+            {
+                "id": str(row['therapist_id']),
+                "rank": i + 1,
+                "staff": f"{row['therapist__first_name']} {row['therapist__last_name']}".strip(),
+                "appointments": row['appointments'],
+                "revenue": row['revenue'] or Decimal('0.00'),
+            }
+            for i, row in enumerate(top_staff_rows)
+        ]
+
+        upcoming = []
+        upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:10]
+        for appt in upcoming_qs:
+            first_item = appt.items.select_related('service', 'therapist').first()
+            upcoming.append({
+                "id": str(appt.id),
+                "start_at": appt.start_time.isoformat(),
+                "customer_name": appt.customer.get_full_name() if appt.customer else "Walk-in",
+                "service": first_item.service.name if first_item else "—",
+                "staff": first_item.therapist.get_full_name() if first_item and first_item.therapist else "Any available",
+                "status": appt.status,
+                "amount": float(sum((i.price for i in appt.items.all()), Decimal('0.00'))),
+            })
+
         data = {
             "today_date": str(today),
+            "today_appointments": appointments_count,
             "appointments_today": appointments_count,
             "walk_ins": walk_in_count,
             "cancelled_appointments": cancelled_count,
+            "today_revenue": revenue_today,
             "revenue_today": revenue_today,
             "pending_payments": pending_payments,
             "today_tips": today_tips,
+            "staff_present": staff_attendance,
             "staff_attendance": staff_attendance,
             "available_therapists": available_therapists,
             "low_stock_alerts": low_stock_count,
             "repeat_customers": repeat_customers_count,
-            "revenue_graph": revenue_graph
+            "revenue_graph": revenue_graph,
+            "revenue_change_pct": pct_change(revenue_today, yesterday_revenue),
+            "appointments_change_pct": pct_change(appointments_count, yesterday_appointments_count),
+            "top_staff": top_staff,
+            "upcoming": upcoming,
         }
         return success_response(data, "Dashboard stats generated")
 from apps.core.models import (
@@ -933,3 +1202,525 @@ class KycOnboardingViewSet(viewsets.ViewSet):
             "message": "Bank account details submitted successfully. HQ will verify and activate payouts within 2 business days.",
             "bank_settlement": BankSettlementSerializer(account).data
         }, status=201)
+from rest_framework.views import APIView
+from django.core.cache import cache
+from apps.core.models import Outlet, StoreService
+from .permissions import IsOutletStaff
+from .availability import compute_availability, availability_cache_key, AVAILABILITY_CACHE_TTL_SECONDS
+class OutletAvailabilityView(APIView):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    def get(self, request, outlet_id):
+        service_id = request.query_params.get('service_id')
+        date_str = request.query_params.get('date')
+        professional_id = request.query_params.get('professional_id')
+        if not service_id or not date_str:
+            return error_response("service_id and date are required", 400)
+        try:
+            the_date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            return error_response("date must be in YYYY-MM-DD format", 400)
+        try:
+            outlet = Outlet.objects.get(id=outlet_id)
+        except (Outlet.DoesNotExist, ValueError):
+            return error_response("Outlet not found", 404)
+        try:
+            store_service = StoreService.objects.get(id=service_id, store_group=outlet.store_group)
+        except (StoreService.DoesNotExist, ValueError):
+            return error_response("Service not found for this outlet", 404)
+        cache_key = availability_cache_key(outlet.id, store_service.id, date_str, professional_id)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return success_response(cached, "Availability (cached)")
+        duration_min, slots = compute_availability(outlet, store_service, the_date, professional_id)
+        payload = {
+            "outlet_id": str(outlet.id),
+            "service_id": str(store_service.id),
+            "date": date_str,
+            "duration_min": duration_min,
+            "slots": [
+                {
+                    "start": s["start"].isoformat(),
+                    "end": s["end"].isoformat(),
+                    "professionals": [{"id": str(p.id), "display_name": p.display_name} for p in s["professionals"]],
+                }
+                for s in slots
+            ],
+        }
+        cache.set(cache_key, payload, AVAILABILITY_CACHE_TTL_SECONDS)
+        return success_response(payload, "Availability")
+from apps.core.models import Booking, AppointmentSlot, BookingStatus, AppointmentSlotStatus
+from .serializers import BookingSerializer, BookingCreateSerializer, ConfirmBookingSerializer, CancelBookingSerializer
+from .booking_engine import confirm_booking, reschedule_slot, BookingConflictError, BookingEngineError
+class BookingViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    http_method_names = ['get', 'post', 'head']
+    def get_queryset(self):
+        return Booking.objects.filter(outlet_id=self.request.user.outlet_id).prefetch_related('slots')
+    def get_serializer_class(self):
+        return BookingCreateSerializer if self.action == 'create' else BookingSerializer
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = serializer.save(
+            outlet=serializer.validated_data.get('outlet') or request.user.outlet,
+            booked_by=request.user,
+            status=BookingStatus.DRAFT,
+        )
+        return success_response(BookingSerializer(booking).data, "Draft booking created", 201)
+    @action(detail=True, methods=['post'])
+    def confirm(self, request, pk=None):
+        booking = self.get_object()
+        serializer = ConfirmBookingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            confirm_booking(
+                booking, serializer.validated_data['slots'], actor=request.user,
+                override_token=serializer.validated_data.get('override_token'),
+                override_reason=serializer.validated_data.get('override_reason'),
+            )
+        except BookingConflictError as e:
+            return success_response({
+                "conflict": True, "conflicts": e.conflicts, "override_token": e.override_token,
+            }, "Conflicts with an existing booking. Resubmit with override_token and override_reason to proceed anyway.", 200)
+        except BookingEngineError as e:
+            return error_response(str(e), 400)
+        booking.refresh_from_db()
+        return success_response(BookingSerializer(booking).data, "Booking confirmed")
+    @action(detail=True, methods=['post'])
+    def start(self, request, pk=None):
+        booking = self.get_object()
+        if booking.status != BookingStatus.CONFIRMED:
+            return error_response(f"Cannot start a booking in status '{booking.status}'.", 400)
+        booking.status = BookingStatus.IN_SERVICE
+        booking.save()
+        booking.slots.filter(status=AppointmentSlotStatus.SCHEDULED).update(status=AppointmentSlotStatus.STARTED)
+        booking.refresh_from_db()
+        return success_response(BookingSerializer(booking).data, "Booking marked in-service")
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        booking = self.get_object()
+        if booking.status != BookingStatus.IN_SERVICE:
+            return error_response(f"Cannot complete a booking in status '{booking.status}'.", 400)
+        booking.status = BookingStatus.COMPLETED
+        booking.save()
+        booking.slots.exclude(status=AppointmentSlotStatus.CANCELLED).update(status=AppointmentSlotStatus.DONE)
+        booking.refresh_from_db()
+        return success_response(BookingSerializer(booking).data, "Booking completed")
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        booking = self.get_object()
+        if booking.status in (BookingStatus.COMPLETED, BookingStatus.CANCELLED, BookingStatus.NO_SHOW):
+            return error_response(f"Cannot cancel a booking in status '{booking.status}'.", 400)
+        serializer = CancelBookingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking.status = BookingStatus.CANCELLED
+        booking.cancelled_at = timezone.now()
+        booking.cancellation_reason = serializer.validated_data['reason']
+        booking.save()
+        booking.slots.exclude(status=AppointmentSlotStatus.DONE).update(status=AppointmentSlotStatus.CANCELLED)
+        booking.refresh_from_db()
+        return success_response(BookingSerializer(booking).data, "Booking cancelled")
+    @action(detail=True, methods=['post'], url_path='no-show')
+    def no_show(self, request, pk=None):
+        booking = self.get_object()
+        if booking.status != BookingStatus.CONFIRMED:
+            return error_response(f"Cannot mark no-show for a booking in status '{booking.status}'.", 400)
+        booking.status = BookingStatus.NO_SHOW
+        booking.save()
+        booking.slots.update(status=AppointmentSlotStatus.CANCELLED)
+        booking.refresh_from_db()
+        return success_response(BookingSerializer(booking).data, "Booking marked as no-show")
+    @action(detail=True, methods=['post'], url_path=r'slots/(?P<slot_id>[^/.]+)/reschedule')
+    def reschedule(self, request, pk=None, slot_id=None):
+        from django.utils.dateparse import parse_datetime
+        booking = self.get_object()
+        try:
+            old_slot = booking.slots.get(id=slot_id)
+        except AppointmentSlot.DoesNotExist:
+            return error_response("Slot not found", 404)
+        new_start = parse_datetime(request.data.get('slot_start') or '')
+        if not new_start:
+            return error_response("slot_start is required and must be an ISO datetime", 400)
+        try:
+            new_slot = reschedule_slot(
+                old_slot, new_start, new_professional_id=request.data.get('professional_id'),
+                actor=request.user, override_token=request.data.get('override_token'),
+                override_reason=request.data.get('override_reason'),
+            )
+        except BookingConflictError as e:
+            return success_response({
+                "conflict": True, "conflicts": e.conflicts, "override_token": e.override_token,
+            }, "Conflicts with an existing booking. Resubmit with override_token and override_reason to proceed anyway.", 200)
+        except BookingEngineError as e:
+            return error_response(str(e), 400)
+        booking.refresh_from_db()
+        return success_response(BookingSerializer(booking).data, "Slot rescheduled")
+from apps.core.models import (
+    Professional, ProfessionalSkill, ProfessionalShift, ProfessionalTimeOff,
+    ProfessionalLinkStatus, Resource, CanonicalService,
+)
+from .serializers import (
+    ProfessionalSerializer, ProfessionalCreateSerializer, ProfessionalShiftSerializer,
+    ProfessionalTimeOffSerializer, ResourceSerializer,
+)
+class ProfessionalViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    def get_queryset(self):
+        return Professional.objects.filter(outlet_id=self.request.user.outlet_id).prefetch_related('skills', 'shifts', 'time_off_blocks')
+    def get_serializer_class(self):
+        return ProfessionalCreateSerializer if self.action == 'create' else ProfessionalSerializer
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        outlet = request.user.outlet
+        professional = serializer.save(
+            outlet=outlet, store_group=outlet.store_group,
+            link_status=ProfessionalLinkStatus.INVITED, invited_at=timezone.now(),
+        )
+        return success_response(ProfessionalSerializer(professional).data, "Professional invited", 201)
+    @action(detail=False, methods=['get'], url_path='skill-tags')
+    def skill_tags(self, request):
+        tags = CanonicalService.objects.exclude(skill_tag__isnull=True).exclude(skill_tag='').values_list('skill_tag', flat=True).distinct().order_by('skill_tag')
+        return success_response(list(tags))
+    @action(detail=True, methods=['post'], url_path='skills')
+    def skills(self, request, pk=None):
+        professional = self.get_object()
+        skill_tags = request.data.get('skill_tags', [])
+        if not isinstance(skill_tags, list):
+            return error_response("skill_tags must be a list", 400)
+        ProfessionalSkill.objects.filter(professional=professional).exclude(skill_tag__in=skill_tags).delete()
+        existing = set(professional.skills.values_list('skill_tag', flat=True))
+        ProfessionalSkill.objects.bulk_create([
+            ProfessionalSkill(professional=professional, skill_tag=tag) for tag in skill_tags if tag not in existing
+        ])
+        professional.refresh_from_db()
+        return success_response(ProfessionalSerializer(professional).data, "Skills updated")
+    @action(detail=True, methods=['get', 'post'], url_path='shifts')
+    def shifts(self, request, pk=None):
+        professional = self.get_object()
+        if request.method == 'GET':
+            return success_response(ProfessionalShiftSerializer(professional.shifts.all(), many=True).data)
+        serializer = ProfessionalShiftSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        shift = serializer.save(professional=professional, outlet=professional.outlet)
+        return success_response(ProfessionalShiftSerializer(shift).data, "Shift added", 201)
+    @action(detail=True, methods=['delete'], url_path=r'shifts/(?P<shift_id>[^/.]+)')
+    def delete_shift(self, request, pk=None, shift_id=None):
+        professional = self.get_object()
+        deleted, _ = ProfessionalShift.objects.filter(id=shift_id, professional=professional).delete()
+        if not deleted:
+            return error_response("Shift not found", 404)
+        return success_response(None, "Shift removed")
+    @action(detail=True, methods=['post'], url_path='time-off')
+    def time_off(self, request, pk=None):
+        professional = self.get_object()
+        serializer = ProfessionalTimeOffSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        block = serializer.save(professional=professional, created_by=request.user.get_full_name() or request.user.email)
+        return success_response(ProfessionalTimeOffSerializer(block).data, "Time off added", 201)
+    @action(detail=True, methods=['delete'], url_path=r'time-off/(?P<block_id>[^/.]+)')
+    def delete_time_off(self, request, pk=None, block_id=None):
+        professional = self.get_object()
+        deleted, _ = ProfessionalTimeOff.objects.filter(id=block_id, professional=professional).delete()
+        if not deleted:
+            return error_response("Time off block not found", 404)
+        return success_response(None, "Time off removed")
+class ResourceViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = ResourceSerializer
+    def get_queryset(self):
+        return Resource.objects.filter(outlet_id=self.request.user.outlet_id)
+    def perform_create(self, serializer):
+        serializer.save(outlet=self.request.user.outlet)
+from apps.core.models import StoreService, GlobalCustomer, normalize_e164
+from .serializers import StoreServiceLiteSerializer, GlobalCustomerLiteSerializer, CustomerLookupSerializer
+class StoreServiceListView(APIView):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    def get(self, request):
+        services = StoreService.objects.filter(
+            store_group_id=request.user.outlet.store_group_id, is_active_in_store=True
+        ).select_related('canonical_service', 'canonical_service__category')
+        return success_response(StoreServiceLiteSerializer(services, many=True).data)
+class CustomerLookupView(APIView):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    def post(self, request):
+        serializer = CustomerLookupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = serializer.validated_data.get('phone')
+        name = serializer.validated_data['name']
+        if phone:
+            customer, _ = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(phone), defaults={'name': name}
+            )
+        else:
+            customer = GlobalCustomer.objects.create(name=name)
+        return success_response(GlobalCustomerLiteSerializer(customer).data, "Customer resolved")
+def _resolve_customer(data):
+    customer_id = data.get('customer_id')
+    if customer_id:
+        return GlobalCustomer.objects.filter(id=customer_id).first()
+    name = (data.get('customer_name') or '').strip()
+    if not name:
+        return None
+    phone = (data.get('customer_phone') or '').strip()
+    if phone:
+        customer, _ = GlobalCustomer.objects.get_or_create(phone_e164=normalize_e164(phone), defaults={'name': name})
+        return customer
+    return GlobalCustomer.objects.create(name=name)
+from apps.core.models import MembershipPlan, Membership, PackagePlan, Package, MembershipStatus
+from .serializers import (
+    MembershipPlanSerializer, MembershipSerializer, SellMembershipSerializer,
+    PackagePlanSerializer, PackageSerializer, SellPackageSerializer,
+)
+class MembershipPlanViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = MembershipPlanSerializer
+    def get_queryset(self):
+        return MembershipPlan.objects.filter(store_group=self.request.user.outlet.store_group_id)
+    def perform_create(self, serializer):
+        serializer.save(store_group=self.request.user.outlet.store_group)
+class MembershipViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = MembershipSerializer
+    def get_queryset(self):
+        qs = Membership.objects.filter(store_group=self.request.user.outlet.store_group_id)
+        customer_id = self.request.query_params.get('customer_id')
+        if customer_id:
+            qs = qs.filter(customer_id=customer_id)
+        return qs
+    @action(detail=False, methods=['post'])
+    def sell(self, request):
+        serializer = SellMembershipSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        outlet = request.user.outlet
+        plan = MembershipPlan.objects.filter(id=serializer.validated_data['plan_id'], store_group=outlet.store_group, is_active=True).first()
+        if not plan:
+            return error_response("Membership plan not found.", 404)
+        customer = _resolve_customer(serializer.validated_data)
+        if not customer:
+            return error_response("A customer is required to sell a membership.", 400)
+        membership = Membership.objects.create(
+            customer=customer, store_group=outlet.store_group, plan_name=plan.name,
+            value_paise_remaining=plan.value_paise, valid_until=timezone.localdate() + datetime.timedelta(days=plan.validity_days),
+        )
+        return success_response(MembershipSerializer(membership).data, "Membership sold", 201)
+class PackagePlanViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = PackagePlanSerializer
+    def get_queryset(self):
+        return PackagePlan.objects.filter(store_group=self.request.user.outlet.store_group_id)
+    def perform_create(self, serializer):
+        serializer.save(store_group=self.request.user.outlet.store_group)
+class PackageViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = PackageSerializer
+    def get_queryset(self):
+        qs = Package.objects.filter(store_group=self.request.user.outlet.store_group_id)
+        customer_id = self.request.query_params.get('customer_id')
+        if customer_id:
+            qs = qs.filter(customer_id=customer_id)
+        return qs
+    @action(detail=False, methods=['post'])
+    def sell(self, request):
+        serializer = SellPackageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        outlet = request.user.outlet
+        plan = PackagePlan.objects.filter(id=serializer.validated_data['plan_id'], store_group=outlet.store_group, is_active=True).first()
+        if not plan:
+            return error_response("Package plan not found.", 404)
+        customer = _resolve_customer(serializer.validated_data)
+        if not customer:
+            return error_response("A customer is required to sell a package.", 400)
+        package = Package.objects.create(
+            customer=customer, store_group=outlet.store_group, name=plan.name,
+            service_credits=dict(plan.service_credits), valid_until=timezone.localdate() + datetime.timedelta(days=plan.validity_days),
+        )
+        return success_response(PackageSerializer(package).data, "Package sold", 201)
+from apps.core.models import Campaign
+from .serializers import CampaignSerializer
+from .campaigns import send_campaign, campaign_analytics
+class CampaignViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = CampaignSerializer
+    def get_queryset(self):
+        return Campaign.objects.filter(store_group=self.request.user.outlet.store_group_id)
+    def perform_create(self, serializer):
+        serializer.save(store_group=self.request.user.outlet.store_group)
+    @action(detail=True, methods=['post'])
+    def send(self, request, pk=None):
+        campaign = self.get_object()
+        sent = send_campaign(campaign)
+        return success_response({"sent": sent}, f"Sent to {sent} customers")
+    @action(detail=True, methods=['get'])
+    def analytics(self, request, pk=None):
+        return success_response(campaign_analytics(self.get_object()))
+from apps.core.models import CommissionRule
+from .serializers import CommissionRuleSerializer
+class CommissionRuleViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    serializer_class = CommissionRuleSerializer
+    def get_queryset(self):
+        return CommissionRule.objects.filter(store_group=self.request.user.outlet.store_group_id)
+    def perform_create(self, serializer):
+        serializer.save(store_group=self.request.user.outlet.store_group)
+class Phase1FinancialReportsView(APIView):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    REPORTS = ('revenue-by-professional', 'revenue-by-category', 'commission-payout', 'daily-register', 'gst')
+    def get(self, request):
+        from .reports import revenue_by_professional, revenue_by_category, commission_payout_report, daily_register_summary, gst_report
+        report = request.query_params.get('report')
+        if report not in self.REPORTS:
+            return error_response(f"report must be one of: {', '.join(self.REPORTS)}", 400)
+        store_group = request.user.outlet.store_group
+        today = timezone.localdate()
+        try:
+            if report == 'daily-register':
+                date_str = request.query_params.get('date')
+                date = datetime.date.fromisoformat(date_str) if date_str else today
+                return success_response(daily_register_summary(store_group, date))
+            date_from_str = request.query_params.get('date_from')
+            date_to_str = request.query_params.get('date_to')
+            date_from = datetime.date.fromisoformat(date_from_str) if date_from_str else today.replace(day=1)
+            date_to = datetime.date.fromisoformat(date_to_str) if date_to_str else today
+        except ValueError:
+            return error_response("date_from/date_to/date must be in YYYY-MM-DD format", 400)
+        if report == 'revenue-by-professional':
+            return success_response(revenue_by_professional(store_group, date_from, date_to))
+        if report == 'revenue-by-category':
+            return success_response(revenue_by_category(store_group, date_from, date_to))
+        if report == 'commission-payout':
+            return success_response(commission_payout_report(store_group, date_from, date_to))
+        return success_response(gst_report(store_group, date_from, date_to))
+class GlobalSearchView(APIView):
+    permission_classes = [IsAuthenticated, IsStoreStaff]
+    def get(self, request):
+        q = (request.query_params.get('q') or '').strip()
+        if len(q) < 2:
+            return success_response({"results": []})
+        store = request.user.store
+        results = []
+
+        appointment_customer_ids = Appointment.objects.filter(store=store).values_list('customer_id', flat=True).distinct()
+        customers = User.objects.filter(role=Role.CUSTOMER).filter(
+            models.Q(id__in=appointment_customer_ids) | models.Q(store=store)
+        ).filter(
+            models.Q(first_name__icontains=q) | models.Q(last_name__icontains=q) |
+            models.Q(phone__icontains=q) | models.Q(email__icontains=q)
+        ).distinct()[:5]
+        for c in customers:
+            results.append({
+                "id": str(c.id), "type": "customer",
+                "title": c.get_full_name() or c.email,
+                "subtitle": c.phone or c.email,
+                "link": f"/customers/{c.id}",
+            })
+
+        invoices = Invoice.objects.filter(store=store, invoice_number__icontains=q).select_related('customer')[:5]
+        for inv in invoices:
+            customer_name = inv.customer.get_full_name() if inv.customer else "Walk-in"
+            results.append({
+                "id": str(inv.id), "type": "invoice",
+                "title": inv.invoice_number or str(inv.id)[:8],
+                "subtitle": f"{customer_name} · ₹{inv.grand_total}",
+                "link": f"/billing/{inv.id}",
+            })
+
+        if request.user.outlet_id:
+            from apps.core.models import Professional
+            professionals = Professional.objects.filter(
+                outlet_id=request.user.outlet_id, display_name__icontains=q
+            )[:5]
+            for p in professionals:
+                results.append({
+                    "id": str(p.id), "type": "professional",
+                    "title": p.display_name,
+                    "subtitle": p.display_role or "Professional",
+                    "link": "/staff/professionals",
+                })
+
+        return success_response({"results": results})
+class NotificationsView(APIView):
+    permission_classes = [IsAuthenticated, IsStoreStaff]
+    def get(self, request):
+        store = request.user.store
+        items = []
+
+        low_stock = Product.objects.filter(
+            store=store, is_active=True, stock_quantity__lte=F('low_stock_warning')
+        ).order_by('stock_quantity')[:10]
+        for p in low_stock:
+            items.append({
+                "id": f"low_stock_{p.id}",
+                "type": "low_stock",
+                "title": f"{p.name} is low on stock",
+                "subtitle": f"{p.stock_quantity} left · reorder soon",
+                "link": "/inventory/products",
+                "created_at": None,
+            })
+
+        unpaid_invoices = Invoice.objects.filter(
+            store=store, status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]
+        ).select_related('customer').order_by('-created_at')[:10]
+        for inv in unpaid_invoices:
+            customer_name = inv.customer.get_full_name() if inv.customer else "Walk-in"
+            items.append({
+                "id": f"unpaid_invoice_{inv.id}",
+                "type": "unpaid_invoice",
+                "title": f"Invoice {inv.invoice_number or str(inv.id)[:8]} {inv.status.lower()}",
+                "subtitle": f"{customer_name} · ₹{inv.grand_total}",
+                "link": f"/billing/{inv.id}",
+                "created_at": inv.created_at.isoformat() if inv.created_at else None,
+            })
+
+        pending_leaves = LeaveRequest.objects.filter(
+            store=store, status='PENDING'
+        ).select_related('staff').order_by('-id')[:10]
+        for lv in pending_leaves:
+            items.append({
+                "id": f"leave_{lv.id}",
+                "type": "leave_pending",
+                "title": f"Leave request from {lv.staff.get_full_name()}",
+                "subtitle": f"{lv.start_date} – {lv.end_date} · Pending",
+                "link": "/staff/leaves",
+                "created_at": None,
+            })
+
+        items.sort(key=lambda x: x["created_at"] or "", reverse=True)
+        return success_response({"count": len(items), "items": items})
+from .serializers import MeSerializer, StoreProfileSerializer
+class MeView(APIView):
+    permission_classes = [IsAuthenticated, IsStoreStaff]
+    def get(self, request):
+        return success_response(MeSerializer(request.user).data)
+    def patch(self, request):
+        serializer = MeSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return success_response(serializer.data, "Profile updated")
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated, IsStoreStaff]
+    def post(self, request):
+        old_password = request.data.get('old_password')
+        new_password = request.data.get('new_password')
+        if not old_password or not new_password:
+            return error_response("old_password and new_password are required", 400)
+        if len(new_password) < 6:
+            return error_response("New password must be at least 6 characters", 400)
+        if not request.user.check_password(old_password):
+            return error_response("Current password is incorrect", 400)
+        request.user.set_password(new_password)
+        request.user.save(update_fields=['password'])
+        return success_response(None, "Password changed")
+class StoreProfileView(APIView):
+    permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
+    def get(self, request):
+        if not request.user.store_id:
+            return error_response("You are not assigned to a store", 404)
+        return success_response(StoreProfileSerializer(request.user.store).data)
+    def patch(self, request):
+        if not request.user.store_id:
+            return error_response("You are not assigned to a store", 404)
+        serializer = StoreProfileSerializer(request.user.store, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return success_response(serializer.data, "Store profile updated")

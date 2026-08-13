@@ -143,3 +143,5 @@ CORS_ALLOW_ALL_ORIGINS = True
 import os
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+BOOKING_AUTO_ASSIGN_STRATEGY = 'fewest_bookings_today'
+BOOKING_OVERRIDE_TOKEN_MAX_AGE_SECONDS = 600

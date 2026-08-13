@@ -92,6 +92,7 @@ class Store(models.Model):
     email = models.EmailField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=StoreStatus.choices, default=StoreStatus.ACTIVE)
     is_premium_listing = models.BooleanField(default=False, help_text="Bumps store in marketplace search for a fee")
+    outlet = models.ForeignKey('Outlet', on_delete=models.SET_NULL, null=True, blank=True, related_name='legacy_stores', help_text="Bridge to the Phase1 Outlet this legacy Store maps to, for online booking")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
@@ -336,6 +337,8 @@ class PaymentMethod(models.TextChoices):
     WALLET = 'WALLET', 'Wallet'
     GIFT_CARD = 'GIFT_CARD', 'Gift Card'
     PACKAGE = 'PACKAGE', 'Package Redemption'
+    MEMBERSHIP_CREDIT = 'MEMBERSHIP_CREDIT', 'Membership Credit'
+    PACKAGE_CREDIT = 'PACKAGE_CREDIT', 'Package Credit'
 class InvoiceStatus(models.TextChoices):
     UNPAID = 'UNPAID', 'Unpaid'
     PAID = 'PAID', 'Paid'
@@ -348,6 +351,8 @@ class Invoice(models.Model):
     outlet = models.ForeignKey('Outlet', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices', help_text="Branch outlet that issued this POS receipt")
     appointment = models.OneToOneField(Appointment, on_delete=models.SET_NULL, null=True, blank=True, related_name='invoice')
     customer = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices')
+    global_customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices', help_text="Phase1 customer identity, for invoices raised from a Booking")
+    booking = models.ForeignKey('Booking', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices')
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -358,15 +363,41 @@ class Invoice(models.Model):
     requires_manager_approval = models.BooleanField(default=False)
     is_discount_approved = models.BooleanField(default=False)
     is_review_reminder_sent = models.BooleanField(default=False)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices_created')
+    finalised_at = models.DateTimeField(null=True, blank=True, help_text="Null means still a draft. Once set, the invoice is immutable.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         ordering = ['-created_at']
+    def save(self, *args, **kwargs):
+        if self.pk and Invoice.objects.filter(pk=self.pk, finalised_at__isnull=False).exists():
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Invoice is finalised and cannot be modified.")
+        super().save(*args, **kwargs)
     def __str__(self):
         return f"{self.invoice_number} ({self.store.name}) - ₹{self.grand_total}"
+    @staticmethod
+    def generate_invoice_number(outlet):
+        """Next gap-free OUTLET_PREFIX-YYYY-NNNN number. Caller must hold a lock on `outlet`
+        (e.g. Outlet.objects.select_for_update()) inside an atomic transaction."""
+        from django.utils import timezone
+        year = timezone.now().year
+        prefix = outlet.invoice_prefix
+        last = Invoice.objects.filter(
+            outlet=outlet, invoice_number__startswith=f"{prefix}-{year}-"
+        ).order_by('-invoice_number').first()
+        next_seq = 1
+        if last:
+            try:
+                next_seq = int(last.invoice_number.rsplit('-', 1)[-1]) + 1
+            except ValueError:
+                next_seq = 1
+        return f"{prefix}-{year}-{next_seq:04d}"
 class InvoiceItem(models.Model):
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='items')
     service = models.ForeignKey(Service, on_delete=models.SET_NULL, null=True, blank=True)
+    store_service = models.ForeignKey('StoreService', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoice_lines', help_text="Phase1 service catalog reference, for lines sourced from a Booking")
+    professional = models.ForeignKey('Professional', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoice_lines', help_text="Who performed this line, for commission accrual")
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
@@ -717,11 +748,25 @@ class StaffIncentive(models.Model):
     def __str__(self):
         return f"{self.title} for {self.staff.get_full_name()}"
 class ServiceProduct(models.Model):
-    service = models.ForeignKey(Service, on_delete=models.CASCADE, related_name='products_used')
+    service = models.ForeignKey(Service, on_delete=models.CASCADE, null=True, blank=True, related_name='products_used')
+    store_service = models.ForeignKey('StoreService', on_delete=models.CASCADE, null=True, blank=True, related_name='products_used', help_text="Phase1 service catalog reference, for services sourced from a Booking")
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity_used = models.PositiveIntegerField(default=1)
     def __str__(self):
-        return f"{self.quantity_used}x {self.product.name} for {self.service.name}"
+        name = self.store_service.name if self.store_service else (self.service.name if self.service else "service")
+        return f"{self.quantity_used}x {self.product.name} for {name}"
+class StockMovement(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='stock_movements')
+    invoice = models.ForeignKey('Invoice', on_delete=models.SET_NULL, null=True, blank=True, related_name='stock_movements')
+    quantity_deducted = models.IntegerField(help_text="Positive integer; always a deduction from stock_quantity")
+    reason = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'stock_movement'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"-{self.quantity_deducted} {self.product.name} ({self.created_at:%Y-%m-%d})"
 class StockTransferStatus(models.TextChoices):
     PENDING = 'PENDING', 'Pending'
     COMPLETED = 'COMPLETED', 'Completed'
@@ -1044,6 +1089,7 @@ class Outlet(SoftDeleteModel):
     opening_time = models.TimeField(null=True, blank=True)
     closing_time = models.TimeField(null=True, blank=True)
     status = models.CharField(max_length=50, default='active')
+    invoice_prefix = models.CharField(max_length=10, unique=True, null=True, blank=True, help_text="Short code used as the prefix for this outlet's invoice numbers, e.g. 'BLR1'. Auto-derived from the name if left blank.")
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         db_table = 'outlet'
@@ -1051,6 +1097,14 @@ class Outlet(SoftDeleteModel):
     def save(self, *args, **kwargs):
         if self.phone:
             self.phone = normalize_e164(self.phone)
+        if not self.invoice_prefix:
+            base = ''.join(ch for ch in self.name.upper() if ch.isalnum())[:4] or 'OUT'
+            candidate = base
+            suffix = 1
+            while Outlet.objects.filter(invoice_prefix=candidate).exclude(pk=self.pk).exists():
+                suffix += 1
+                candidate = f"{base[:3]}{suffix}"
+            self.invoice_prefix = candidate
         super().save(*args, **kwargs)
     def __str__(self):
         return f"{self.name} - {self.store_group.name}"
@@ -1153,6 +1207,7 @@ class CanonicalService(SoftDeleteModel):
     resource_type = models.CharField(max_length=20, choices=ResourceType.choices, default=ResourceType.NONE, help_text="Unified resource logic: chair = room = equipment")
     gender_applicability = models.CharField(max_length=20, choices=[('men', 'Men'), ('women', 'Women'), ('unisex', 'Unisex')], default='unisex')
     skill_tag = models.CharField(max_length=100, blank=True, null=True)
+    hsn_sac_code = models.CharField(max_length=20, blank=True, null=True, help_text="GST HSN/SAC code for this service, e.g. '999721'")
     is_active = models.BooleanField(default=True)
     class Meta:
         db_table = 'canonical_service'
@@ -1194,6 +1249,195 @@ class StoreServiceOutletOverride(models.Model):
         unique_together = ('store_service', 'outlet')
     def __str__(self):
         return f"{self.store_service.name} override at {self.outlet.name}"
+class ProfessionalLinkStatus(models.TextChoices):
+    INVITED = 'invited', 'Invited'
+    ACCEPTED = 'accepted', 'Accepted'
+    DECLINED = 'declined', 'Declined'
+    REMOVED = 'removed', 'Removed'
+class Professional(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='professionals')
+    outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='professionals')
+    user_account = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_profiles', help_text="Nullable until the invited professional accepts")
+    display_name = models.CharField(max_length=255)
+    display_role = models.CharField(max_length=100, blank=True, null=True, help_text="Free text, e.g. 'Senior Stylist'")
+    phone_e164 = models.CharField(max_length=20, null=True, blank=True, db_index=True)
+    email = models.EmailField(null=True, blank=True)
+    gender = models.CharField(max_length=50, null=True, blank=True)
+    link_status = models.CharField(max_length=20, choices=ProfessionalLinkStatus.choices, default=ProfessionalLinkStatus.INVITED)
+    is_bookable = models.BooleanField(default=True)
+    invited_at = models.DateTimeField(null=True, blank=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'professional'
+        ordering = ['display_name']
+    def save(self, *args, **kwargs):
+        if self.phone_e164:
+            self.phone_e164 = normalize_e164(self.phone_e164)
+        super().save(*args, **kwargs)
+    def __str__(self):
+        return f"{self.display_name} ({self.link_status}) @ {self.outlet.name}"
+class ProfessionalSkill(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional = models.ForeignKey(Professional, on_delete=models.CASCADE, related_name='skills')
+    skill_tag = models.CharField(max_length=100, help_text="Maps to CanonicalService.skill_tag")
+    class Meta:
+        db_table = 'professional_skill'
+        unique_together = ('professional', 'skill_tag')
+        ordering = ['skill_tag']
+    def __str__(self):
+        return f"{self.professional.display_name}: {self.skill_tag}"
+class ResourceKind(models.TextChoices):
+    CHAIR = 'chair', 'Chair'
+    ROOM = 'room', 'Room'
+    EQUIPMENT = 'equipment', 'Equipment'
+class Resource(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='resources')
+    name = models.CharField(max_length=255)
+    resource_type = models.CharField(max_length=20, choices=ResourceKind.choices)
+    capacity = models.IntegerField(default=1, help_text="Usually 1; a couples room = 2")
+    is_bookable = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'resource'
+        ordering = ['outlet', 'resource_type', 'name']
+    def __str__(self):
+        return f"{self.name} ({self.resource_type}) @ {self.outlet.name}"
+class ProfessionalShift(models.Model):
+    WEEKDAY_CHOICES = [(0, 'Monday'), (1, 'Tuesday'), (2, 'Wednesday'), (3, 'Thursday'), (4, 'Friday'), (5, 'Saturday'), (6, 'Sunday')]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional = models.ForeignKey(Professional, on_delete=models.CASCADE, related_name='shifts')
+    outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='professional_shifts')
+    weekday = models.IntegerField(choices=WEEKDAY_CHOICES)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True, help_text="Null means open-ended")
+    class Meta:
+        db_table = 'professional_shift'
+        ordering = ['professional', 'weekday', 'start_time']
+    def __str__(self):
+        return f"{self.professional.display_name} - {self.get_weekday_display()} {self.start_time}-{self.end_time}"
+class ProfessionalTimeOff(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional = models.ForeignKey(Professional, on_delete=models.CASCADE, related_name='time_off_blocks')
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    reason = models.CharField(max_length=255, blank=True, null=True)
+    created_by = models.CharField(max_length=255, blank=True, null=True, help_text="Internal user ID or name")
+    class Meta:
+        db_table = 'professional_time_off'
+        ordering = ['-start_at']
+    def __str__(self):
+        return f"{self.professional.display_name} off {self.start_at} - {self.end_at}"
+class BookingSource(models.TextChoices):
+    WALK_IN = 'walk_in', 'Walk In'
+    FRONT_DESK = 'front_desk', 'Front Desk'
+    PHONE = 'phone', 'Phone'
+    ONLINE = 'online', 'Online'
+    WHATSAPP = 'whatsapp', 'WhatsApp'
+class BookingStatus(models.TextChoices):
+    DRAFT = 'draft', 'Draft'
+    CONFIRMED = 'confirmed', 'Confirmed'
+    IN_SERVICE = 'in_service', 'In Service'
+    COMPLETED = 'completed', 'Completed'
+    CANCELLED = 'cancelled', 'Cancelled'
+    NO_SHOW = 'no_show', 'No Show'
+class Booking(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='bookings')
+    customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='bookings')
+    source = models.CharField(max_length=20, choices=BookingSource.choices, default=BookingSource.WALK_IN)
+    status = models.CharField(max_length=20, choices=BookingStatus.choices, default=BookingStatus.DRAFT)
+    booked_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='bookings_made', help_text="Staff member who created this booking")
+    booking_start = models.DateTimeField()
+    booking_end = models.DateTimeField()
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, null=True)
+    class Meta:
+        db_table = 'booking'
+        ordering = ['-booking_start']
+    def __str__(self):
+        return f"Booking {self.id} @ {self.outlet.name} ({self.status})"
+class AppointmentSlotStatus(models.TextChoices):
+    SCHEDULED = 'scheduled', 'Scheduled'
+    STARTED = 'started', 'Started'
+    DONE = 'done', 'Done'
+    CANCELLED = 'cancelled', 'Cancelled'
+class AppointmentSlot(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='slots')
+    store_service = models.ForeignKey('StoreService', on_delete=models.PROTECT, related_name='appointment_slots')
+    professional = models.ForeignKey(Professional, on_delete=models.SET_NULL, null=True, blank=True, related_name='appointment_slots')
+    resource = models.ForeignKey(Resource, on_delete=models.SET_NULL, null=True, blank=True, related_name='appointment_slots')
+    slot_start = models.DateTimeField()
+    slot_end = models.DateTimeField()
+    price_paise = models.BigIntegerField(help_text="Price stored strictly in integer paise, locked at time of booking")
+    status = models.CharField(max_length=20, choices=AppointmentSlotStatus.choices, default=AppointmentSlotStatus.SCHEDULED)
+    was_overridden = models.BooleanField(default=False, help_text="True if this slot was booked despite a conflict warning")
+    override_reason = models.TextField(blank=True, null=True)
+    overridden_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='slot_overrides')
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'appointment_slot'
+        ordering = ['slot_start']
+    def __str__(self):
+        return f"{self.store_service.name} {self.slot_start} ({self.status})"
+class CommissionAppliesTo(models.TextChoices):
+    SERVICE = 'service', 'Service'
+    PRODUCT = 'product', 'Product'
+    CATEGORY = 'category', 'Category'
+class CommissionRateType(models.TextChoices):
+    PERCENT = 'percent', 'Percent'
+    FLAT = 'flat', 'Flat'
+class CommissionRule(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='commission_rules')
+    professional = models.ForeignKey(Professional, on_delete=models.CASCADE, null=True, blank=True, related_name='commission_rules', help_text="Null applies to every professional")
+    applies_to = models.CharField(max_length=20, choices=CommissionAppliesTo.choices)
+    rate_type = models.CharField(max_length=20, choices=CommissionRateType.choices)
+    rate_value = models.DecimalField(max_digits=10, decimal_places=2, help_text="Percentage (e.g. 12.50) if rate_type=percent, else flat amount in rupees")
+    effective_from = models.DateField()
+    class Meta:
+        db_table = 'commission_rule'
+        ordering = ['-effective_from']
+    def __str__(self):
+        who = self.professional.display_name if self.professional_id else "Everyone"
+        return f"{who}: {self.rate_value} ({self.rate_type}) on {self.applies_to}"
+class CommissionAccrual(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    invoice_line = models.ForeignKey('InvoiceItem', on_delete=models.CASCADE, related_name='commission_accruals')
+    professional = models.ForeignKey(Professional, on_delete=models.CASCADE, related_name='commission_accruals')
+    base_paise = models.BigIntegerField(help_text="Line amount commission was calculated on, in integer paise")
+    commission_paise = models.BigIntegerField(help_text="Computed commission amount, in integer paise")
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'commission_accrual'
+        ordering = ['-created_at']
+    def save(self, *args, **kwargs):
+        if self.pk and CommissionAccrual.objects.filter(pk=self.pk).exists():
+            from django.core.exceptions import ValidationError
+            raise ValidationError("CommissionAccrual is auto-computed at invoice finalisation and cannot be edited.")
+        super().save(*args, **kwargs)
+    def __str__(self):
+        return f"{self.professional.display_name}: ₹{self.commission_paise / 100:.2f}"
+class CreditNote(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    invoice = models.ForeignKey('Invoice', on_delete=models.CASCADE, related_name='credit_notes')
+    reason = models.TextField()
+    amount_paise = models.BigIntegerField(help_text="Correction amount stored strictly in integer paise")
+    created_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='credit_notes_created')
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'credit_note'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"Credit ₹{self.amount_paise / 100:.2f} on {self.invoice.invoice_number}"
 class CustomerStatus(models.TextChoices):
     ACTIVE = 'active', 'Active'
     BLOCKED = 'blocked', 'Blocked'
@@ -1247,6 +1491,103 @@ class CustomerStoreLink(SoftDeleteModel):
         ordering = ['-last_visit_at', '-created_at']
     def __str__(self):
         return f"{self.customer.name} at {self.store_group.name} (Spend: ₹{self.lifetime_spend_paise / 100:.2f})"
+class MembershipPlan(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='membership_plans')
+    name = models.CharField(max_length=200)
+    value_paise = models.BigIntegerField(help_text="Wallet credit granted on purchase, in integer paise")
+    validity_days = models.IntegerField(default=365)
+    price_paise = models.BigIntegerField(help_text="What the customer pays, in integer paise")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'membership_plan'
+        ordering = ['name']
+    def __str__(self):
+        return f"{self.name} (₹{self.price_paise / 100:.2f} for ₹{self.value_paise / 100:.2f} value)"
+class MembershipStatus(models.TextChoices):
+    ACTIVE = 'active', 'Active'
+    EXPIRED = 'expired', 'Expired'
+    CANCELLED = 'cancelled', 'Cancelled'
+class Membership(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(GlobalCustomer, on_delete=models.CASCADE, related_name='memberships')
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='memberships')
+    plan_name = models.CharField(max_length=200)
+    value_paise_remaining = models.BigIntegerField()
+    valid_until = models.DateField()
+    status = models.CharField(max_length=20, choices=MembershipStatus.choices, default=MembershipStatus.ACTIVE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'membership'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.plan_name} for {self.customer.name} (₹{self.value_paise_remaining / 100:.2f} left)"
+class PackagePlan(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='package_plans')
+    name = models.CharField(max_length=200)
+    service_credits = models.JSONField(default=dict, help_text="{store_service_id: credit_count} bundled into this package")
+    validity_days = models.IntegerField(default=180)
+    price_paise = models.BigIntegerField(help_text="What the customer pays, in integer paise")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'package_plan'
+        ordering = ['name']
+    def __str__(self):
+        return f"{self.name} (₹{self.price_paise / 100:.2f})"
+class Package(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(GlobalCustomer, on_delete=models.CASCADE, related_name='packages')
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='packages')
+    name = models.CharField(max_length=200)
+    service_credits = models.JSONField(default=dict, help_text="{store_service_id: credits_remaining}")
+    valid_until = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'package'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.name} for {self.customer.name}"
+class CampaignChannel(models.TextChoices):
+    SMS = 'sms', 'SMS'
+    WHATSAPP = 'whatsapp', 'WhatsApp'
+    EMAIL = 'email', 'Email'
+class CampaignTargetType(models.TextChoices):
+    LAPSED_60D = 'lapsed_60d', 'Not visited in 60+ days'
+    BIRTHDAY_THIS_WEEK = 'birthday_this_week', 'Birthday this week'
+    LIFECYCLE_LAPSING = 'lifecycle_lapsing', 'Lifecycle stage: Lapsing'
+class CampaignStatus(models.TextChoices):
+    DRAFT = 'draft', 'Draft'
+    SENT = 'sent', 'Sent'
+class Campaign(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='campaigns')
+    name = models.CharField(max_length=255)
+    channel = models.CharField(max_length=20, choices=CampaignChannel.choices)
+    target_type = models.CharField(max_length=30, choices=CampaignTargetType.choices)
+    message_template = models.TextField(help_text="Use {name} as a placeholder for the customer's name")
+    status = models.CharField(max_length=20, choices=CampaignStatus.choices, default=CampaignStatus.DRAFT)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    class Meta:
+        db_table = 'campaign'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.name} ({self.get_target_type_display()})"
+class CampaignSend(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='sends')
+    customer = models.ForeignKey(GlobalCustomer, on_delete=models.CASCADE, related_name='campaign_sends')
+    sent_at = models.DateTimeField(auto_now_add=True)
+    opened_at = models.DateTimeField(null=True, blank=True, help_text="Set by a future delivery-webhook integration; unused until a real gateway is connected")
+    class Meta:
+        db_table = 'campaign_send'
+        unique_together = ('campaign', 'customer')
+        ordering = ['-sent_at']
+    def __str__(self):
+        return f"{self.campaign.name} -> {self.customer.name}"
 class ConsentType(models.TextChoices):
     MARKETING_WHATSAPP = 'marketing_whatsapp', 'Marketing WhatsApp'
     MARKETING_SMS = 'marketing_sms', 'Marketing SMS'

@@ -17,11 +17,14 @@ from .serializers import (
     CustomerAppointmentSerializer, GiftCardSerializer,
     CustomerPackageSerializer,
     FavoriteTherapistSerializer, CustomerInvoiceSerializer,
-    PublicServiceSerializer, PublicCouponSerializer, PublicTherapistSerializer
+    PublicServiceSerializer, PublicCouponSerializer, PublicTherapistSerializer,
+    Phase1StoreServiceSerializer, Phase1ProfessionalSerializer, Phase1BookingRequestSerializer
 )
 from .permissions import IsCustomer
 def success_response(data, message="Success", status_code=200):
     return Response({"success": True, "message": message, "data": data}, status=status_code)
+def error_response(message="Error", status_code=400):
+    return Response({"success": False, "message": message, "data": None}, status=status_code)
 class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Store.objects.filter(status='ACTIVE')
     serializer_class = PublicStoreSerializer
@@ -41,6 +44,105 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
         )
         serializer = PublicServiceCategorySerializer(categories, many=True)
         return success_response(serializer.data, f"Menu for {store.name}")
+    @action(detail=True, methods=['get'], url_path='phase1-menu')
+    def phase1_menu(self, request, pk=None):
+        from apps.core.models import StoreService
+        store = self.get_object()
+        if not store.outlet_id:
+            return error_response("Online booking is not available for this location yet.", 404)
+        services = StoreService.objects.filter(
+            store_group=store.outlet.store_group_id, is_active_in_store=True
+        ).select_related('canonical_service', 'canonical_service__category')
+        return success_response(Phase1StoreServiceSerializer(services, many=True).data, f"Menu for {store.name}")
+    @action(detail=True, methods=['get'], url_path='phase1-professionals')
+    def phase1_professionals(self, request, pk=None):
+        from apps.core.models import Professional, ProfessionalLinkStatus, StoreService
+        store = self.get_object()
+        if not store.outlet_id:
+            return error_response("Online booking is not available for this location yet.", 404)
+        qs = Professional.objects.filter(outlet_id=store.outlet_id, is_bookable=True, link_status=ProfessionalLinkStatus.ACCEPTED)
+        skill_tag = None
+        service_id = request.query_params.get('service_id')
+        if service_id:
+            svc = StoreService.objects.filter(id=service_id).select_related('canonical_service').first()
+            if svc and svc.canonical_service_id:
+                skill_tag = svc.canonical_service.skill_tag
+        if skill_tag:
+            qs = qs.filter(skills__skill_tag=skill_tag)
+        return success_response(Phase1ProfessionalSerializer(qs.distinct(), many=True).data)
+    @action(detail=True, methods=['get'], url_path='phase1-availability')
+    def phase1_availability(self, request, pk=None):
+        import datetime
+        from apps.core.models import StoreService
+        from apps.store_erp.availability import compute_availability
+        store = self.get_object()
+        if not store.outlet_id:
+            return error_response("Online booking is not available for this location yet.", 404)
+        service_id = request.query_params.get('service_id')
+        date_str = request.query_params.get('date')
+        if not service_id or not date_str:
+            return error_response("service_id and date are required", 400)
+        try:
+            the_date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            return error_response("date must be in YYYY-MM-DD format", 400)
+        try:
+            svc = StoreService.objects.get(id=service_id, store_group=store.outlet.store_group_id)
+        except StoreService.DoesNotExist:
+            return error_response("Service not found for this store.", 404)
+        professional_id = request.query_params.get('professional_id')
+        duration_min, slots = compute_availability(store.outlet, svc, the_date, professional_id)
+        return success_response({
+            "duration_min": duration_min,
+            "slots": [
+                {
+                    "start": s["start"].isoformat(), "end": s["end"].isoformat(),
+                    "professionals": [{"id": str(p.id), "display_name": p.display_name} for p in s["professionals"]],
+                }
+                for s in slots
+            ],
+        })
+    @action(detail=True, methods=['post'], url_path='phase1-book', permission_classes=[IsAuthenticated, IsCustomer])
+    def phase1_book(self, request, pk=None):
+        from apps.core.models import GlobalCustomer, Booking, BookingStatus, BookingSource, normalize_e164
+        from apps.store_erp.booking_engine import confirm_booking, BookingConflictError, BookingEngineError
+        store = self.get_object()
+        if not store.outlet_id:
+            return error_response("Online booking is not available for this location yet.", 404)
+        serializer = Phase1BookingRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        slot_start = serializer.validated_data['slot_start']
+        slot_end = serializer.validated_data['slot_end']
+        user = request.user
+        if user.phone:
+            customer, _ = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(user.phone), defaults={'name': user.get_full_name() or user.email, 'email': user.email}
+            )
+        else:
+            customer, _ = GlobalCustomer.objects.get_or_create(email=user.email, defaults={'name': user.get_full_name() or user.email})
+        booking = Booking.objects.create(
+            outlet_id=store.outlet_id, customer=customer, source=BookingSource.ONLINE,
+            status=BookingStatus.DRAFT, booking_start=slot_start, booking_end=slot_end,
+        )
+        slot_request = {
+            'store_service_id': str(serializer.validated_data['store_service_id']),
+            'slot_start': slot_start, 'slot_end': slot_end,
+        }
+        if serializer.validated_data.get('professional_id'):
+            slot_request['professional_id'] = str(serializer.validated_data['professional_id'])
+        try:
+            confirm_booking(booking, [slot_request], actor=None)
+        except BookingConflictError as e:
+            return success_response({
+                "conflict": True, "conflicts": e.conflicts,
+            }, "That time just got booked. Please pick another slot.", 200)
+        except BookingEngineError as e:
+            return error_response(str(e), 400)
+        booking.refresh_from_db()
+        return success_response({
+            "id": str(booking.id), "status": booking.status,
+            "booking_start": booking.booking_start.isoformat(), "booking_end": booking.booking_end.isoformat(),
+        }, "Booking confirmed", 201)
     @action(detail=True, methods=['get'])
     def reviews(self, request, pk=None):
         store = self.get_object()

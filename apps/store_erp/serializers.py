@@ -10,7 +10,8 @@ from apps.core.models import (
     StaffDocument, StaffTarget, Payroll,
     ServiceProduct, StockTransfer, Referral, Waitlist,
     CustomerProfile, StaffTraining,
-    KycDocument, KycDocType, BankSettlementAccount
+    KycDocument, KycDocType, BankSettlementAccount,
+    CreditNote
 )
 class ServiceSerializer(serializers.ModelSerializer):
     class Meta:
@@ -95,10 +96,17 @@ class CreateAppointmentSerializer(serializers.Serializer):
     recurrence_end_date = serializers.DateField(required=False, allow_null=True)
     items = CreateAppointmentItemSerializer(many=True)
 class InvoiceItemSerializer(serializers.ModelSerializer):
-    service_name = serializers.CharField(source='service.name', read_only=True)
+    service_name = serializers.SerializerMethodField()
+    professional_name = serializers.CharField(source='professional.display_name', read_only=True)
     class Meta:
         model = InvoiceItem
-        fields = ['id', 'service', 'service_name', 'quantity', 'price', 'tax_rate', 'tax_amount', 'total']
+        fields = ['id', 'service', 'store_service', 'service_name', 'professional', 'professional_name', 'quantity', 'price', 'tax_rate', 'tax_amount', 'total']
+    def get_service_name(self, obj):
+        if obj.store_service_id:
+            return obj.store_service.name
+        if obj.service_id:
+            return obj.service.name
+        return "Item"
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
@@ -108,19 +116,29 @@ class TipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tip
         fields = ['id', 'therapist', 'therapist_name', 'amount', 'created_at']
+class CreditNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CreditNote
+        fields = ['id', 'invoice', 'reason', 'amount_paise', 'created_by', 'created_at']
+        read_only_fields = ['id', 'invoice', 'created_by', 'created_at']
 class InvoiceSerializer(serializers.ModelSerializer):
     items = InvoiceItemSerializer(many=True, read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
     tips = TipSerializer(many=True, read_only=True)
+    credit_notes = CreditNoteSerializer(many=True, read_only=True)
     customer_details = serializers.SerializerMethodField()
+    global_customer_name = serializers.CharField(source='global_customer.name', read_only=True, default=None)
     class Meta:
         model = Invoice
         fields = [
-            'id', 'invoice_number', 'store', 'appointment', 'customer', 'customer_details',
+            'id', 'invoice_number', 'store', 'outlet', 'appointment', 'booking',
+            'customer', 'customer_details', 'global_customer', 'global_customer_name',
             'subtotal', 'discount_amount', 'tax_amount', 'grand_total', 'status',
-            'created_at', 'updated_at', 'items', 'payments', 'tips'
+            'requires_manager_approval', 'is_discount_approved',
+            'finalised_at', 'created_by',
+            'created_at', 'updated_at', 'items', 'payments', 'tips', 'credit_notes'
         ]
-        read_only_fields = ['invoice_number', 'store']
+        read_only_fields = ['invoice_number', 'store', 'finalised_at', 'created_by']
     def get_customer_details(self, obj):
         if obj.customer:
             return {
@@ -392,3 +410,163 @@ class BankSettlementSerializer(serializers.ModelSerializer):
                 "Account number must be 9–18 digits."
             )
         return value
+from apps.core.models import Booking, AppointmentSlot
+class AppointmentSlotSerializer(serializers.ModelSerializer):
+    store_service_name = serializers.CharField(source='store_service.name', read_only=True)
+    professional_name = serializers.CharField(source='professional.display_name', read_only=True)
+    resource_name = serializers.CharField(source='resource.name', read_only=True)
+    class Meta:
+        model = AppointmentSlot
+        fields = [
+            'id', 'store_service', 'store_service_name', 'professional', 'professional_name',
+            'resource', 'resource_name', 'slot_start', 'slot_end', 'price_paise', 'status',
+            'was_overridden', 'override_reason', 'created_at'
+        ]
+        read_only_fields = fields
+class BookingSerializer(serializers.ModelSerializer):
+    slots = AppointmentSlotSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    booked_by_name = serializers.SerializerMethodField()
+    class Meta:
+        model = Booking
+        fields = [
+            'id', 'outlet', 'customer', 'customer_name', 'source', 'status',
+            'booked_by', 'booked_by_name', 'booking_start', 'booking_end', 'notes',
+            'created_at', 'cancelled_at', 'cancellation_reason', 'slots'
+        ]
+        read_only_fields = ['status', 'booked_by', 'created_at', 'cancelled_at', 'cancellation_reason']
+    def get_booked_by_name(self, obj):
+        if obj.booked_by:
+            return obj.booked_by.get_full_name() or obj.booked_by.email
+        return None
+class BookingCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Booking
+        fields = ['id', 'outlet', 'customer', 'source', 'booking_start', 'booking_end', 'notes']
+        extra_kwargs = {'outlet': {'required': False}}
+class SlotRequestSerializer(serializers.Serializer):
+    store_service_id = serializers.UUIDField()
+    professional_id = serializers.UUIDField(required=False, allow_null=True)
+    resource_id = serializers.UUIDField(required=False, allow_null=True)
+    slot_start = serializers.DateTimeField()
+    slot_end = serializers.DateTimeField()
+class ConfirmBookingSerializer(serializers.Serializer):
+    slots = SlotRequestSerializer(many=True)
+    override_token = serializers.CharField(required=False, allow_blank=True)
+    override_reason = serializers.CharField(required=False, allow_blank=True)
+class CancelBookingSerializer(serializers.Serializer):
+    reason = serializers.CharField()
+from apps.core.models import Professional, ProfessionalSkill, ProfessionalShift, ProfessionalTimeOff, Resource
+class ProfessionalSkillSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProfessionalSkill
+        fields = ['id', 'skill_tag']
+class ProfessionalShiftSerializer(serializers.ModelSerializer):
+    weekday_display = serializers.CharField(source='get_weekday_display', read_only=True)
+    class Meta:
+        model = ProfessionalShift
+        fields = ['id', 'weekday', 'weekday_display', 'start_time', 'end_time', 'effective_from', 'effective_to']
+class ProfessionalTimeOffSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProfessionalTimeOff
+        fields = ['id', 'start_at', 'end_at', 'reason', 'created_by']
+        read_only_fields = ['created_by']
+class ProfessionalSerializer(serializers.ModelSerializer):
+    skills = ProfessionalSkillSerializer(many=True, read_only=True)
+    shifts = ProfessionalShiftSerializer(many=True, read_only=True)
+    time_off_blocks = ProfessionalTimeOffSerializer(many=True, read_only=True)
+    class Meta:
+        model = Professional
+        fields = [
+            'id', 'outlet', 'display_name', 'display_role', 'phone_e164', 'email', 'gender',
+            'link_status', 'is_bookable', 'invited_at', 'accepted_at', 'removed_at',
+            'created_at', 'skills', 'shifts', 'time_off_blocks'
+        ]
+        read_only_fields = ['outlet', 'link_status', 'invited_at', 'accepted_at', 'removed_at', 'created_at']
+class ProfessionalCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Professional
+        fields = ['id', 'display_name', 'display_role', 'phone_e164', 'email', 'gender']
+class ResourceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Resource
+        fields = ['id', 'outlet', 'name', 'resource_type', 'capacity', 'is_bookable', 'created_at']
+        read_only_fields = ['outlet', 'created_at']
+from apps.core.models import StoreService, GlobalCustomer
+class StoreServiceLiteSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='canonical_service.category.name', read_only=True, default=None)
+    skill_tag = serializers.CharField(source='canonical_service.skill_tag', read_only=True, default=None)
+    class Meta:
+        model = StoreService
+        fields = ['id', 'name', 'default_price_paise', 'duration_min', 'category_name', 'skill_tag']
+        read_only_fields = fields
+class GlobalCustomerLiteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GlobalCustomer
+        fields = ['id', 'name', 'phone_e164', 'email']
+        read_only_fields = fields
+class CustomerLookupSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    phone = serializers.CharField(required=False, allow_blank=True)
+from apps.core.models import MembershipPlan, Membership, PackagePlan, Package
+class MembershipPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MembershipPlan
+        fields = ['id', 'store_group', 'name', 'value_paise', 'validity_days', 'price_paise', 'is_active', 'created_at']
+        read_only_fields = ['store_group', 'created_at']
+class MembershipSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    class Meta:
+        model = Membership
+        fields = ['id', 'customer', 'customer_name', 'store_group', 'plan_name', 'value_paise_remaining', 'valid_until', 'status', 'created_at']
+        read_only_fields = ['customer', 'store_group', 'plan_name', 'value_paise_remaining', 'valid_until', 'status', 'created_at']
+class SellMembershipSerializer(serializers.Serializer):
+    plan_id = serializers.UUIDField()
+    customer_id = serializers.UUIDField(required=False, allow_null=True)
+    customer_name = serializers.CharField(required=False, allow_blank=True)
+    customer_phone = serializers.CharField(required=False, allow_blank=True)
+class PackagePlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PackagePlan
+        fields = ['id', 'store_group', 'name', 'service_credits', 'validity_days', 'price_paise', 'is_active', 'created_at']
+        read_only_fields = ['store_group', 'created_at']
+class PackageSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    class Meta:
+        model = Package
+        fields = ['id', 'customer', 'customer_name', 'store_group', 'name', 'service_credits', 'valid_until', 'created_at']
+        read_only_fields = ['customer', 'store_group', 'name', 'service_credits', 'valid_until', 'created_at']
+class SellPackageSerializer(serializers.Serializer):
+    plan_id = serializers.UUIDField()
+    customer_id = serializers.UUIDField(required=False, allow_null=True)
+    customer_name = serializers.CharField(required=False, allow_blank=True)
+    customer_phone = serializers.CharField(required=False, allow_blank=True)
+from apps.core.models import CommissionRule
+class CommissionRuleSerializer(serializers.ModelSerializer):
+    professional_name = serializers.CharField(source='professional.display_name', read_only=True, default=None)
+    class Meta:
+        model = CommissionRule
+        fields = ['id', 'store_group', 'professional', 'professional_name', 'applies_to', 'rate_type', 'rate_value', 'effective_from']
+        read_only_fields = ['store_group']
+from apps.core.models import Campaign
+class CampaignSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Campaign
+        fields = ['id', 'store_group', 'name', 'channel', 'target_type', 'message_template', 'status', 'created_at', 'sent_at']
+        read_only_fields = ['store_group', 'status', 'created_at', 'sent_at']
+class MeSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source='store.name', read_only=True, default=None)
+    outlet_name = serializers.CharField(source='outlet.name', read_only=True, default=None)
+    class Meta:
+        model = User
+        fields = ['id', 'email', 'first_name', 'last_name', 'phone', 'role', 'store_name', 'outlet_name', 'date_joined']
+        read_only_fields = ['id', 'email', 'role', 'store_name', 'outlet_name', 'date_joined']
+from apps.core.models import Store
+class StoreProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Store
+        fields = [
+            'id', 'name', 'address', 'location', 'working_hours', 'currency', 'timezone',
+            'gst_number', 'contact_number', 'email', 'status', 'is_premium_listing',
+        ]
+        read_only_fields = ['id', 'status', 'is_premium_listing']

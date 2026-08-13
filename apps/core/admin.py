@@ -13,10 +13,13 @@ from .models import (
     StoreGroup, StoreStatusHistory, KycDocument, KycDocStatus, Outlet,
     BankSettlementAccount,
     ServiceCategoryPhase1, CanonicalService, StoreService, StoreServiceOutletOverride,
+    Professional, ProfessionalSkill, Resource, ProfessionalShift, ProfessionalTimeOff,
+    Booking, AppointmentSlot, CommissionRule, CommissionAccrual, CreditNote,
+    MembershipPlan, Membership, PackagePlan, Package, Campaign, CampaignSend,
     GlobalCustomer, CustomerStoreLink, CustomerConsent, CustomerMergeLog,
     AuditLog, ImpersonationSession,
     Vendor, Product, Room, Shift, Attendance, LeaveRequest, MarketingCampaign, DailyRegister,
-    Payroll
+    Payroll, ServiceProduct, StockMovement
 )
 admin.site.site_header = "NearByMe Master Admin Panel (Phase 1 | v2)"
 admin.site.site_title = "NearByMe Master Admin"
@@ -100,10 +103,11 @@ class AppointmentItemAdmin(admin.ModelAdmin):
     list_display = ('appointment', 'service', 'therapist', 'price')
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    list_display = ('invoice_number', 'store', 'outlet', 'grand_total', 'status', 'created_at')
+    list_display = ('invoice_number', 'store', 'outlet', 'grand_total', 'status', 'finalised_at', 'created_at')
     list_filter = ('status', 'store', 'outlet')
     search_fields = ('invoice_number', 'customer__email')
     date_hierarchy = 'created_at'
+    readonly_fields = ('finalised_at',)
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
     list_display = ('invoice', 'method', 'amount', 'created_at')
@@ -399,6 +403,103 @@ class StoreServiceOutletOverrideAdmin(admin.ModelAdmin):
     list_display = ('store_service', 'outlet', 'price_paise', 'duration_min', 'is_available')
     list_filter = ('is_available',)
     search_fields = ('store_service__name', 'outlet__name')
+class ProfessionalSkillInline(admin.TabularInline):
+    model = ProfessionalSkill
+    extra = 0
+class ProfessionalShiftInline(admin.TabularInline):
+    model = ProfessionalShift
+    extra = 0
+class ProfessionalTimeOffInline(admin.TabularInline):
+    model = ProfessionalTimeOff
+    extra = 0
+@admin.register(Professional)
+class ProfessionalAdmin(admin.ModelAdmin):
+    list_display = ('display_name', 'display_role', 'outlet', 'store_group', 'link_status', 'is_bookable', 'created_at')
+    list_filter = ('link_status', 'is_bookable', 'outlet')
+    search_fields = ('display_name', 'phone_e164', 'email')
+    readonly_fields = ('deleted_at',)
+    inlines = [ProfessionalSkillInline, ProfessionalShiftInline, ProfessionalTimeOffInline]
+@admin.register(Resource)
+class ResourceAdmin(admin.ModelAdmin):
+    list_display = ('name', 'outlet', 'resource_type', 'capacity', 'is_bookable', 'created_at')
+    list_filter = ('resource_type', 'is_bookable', 'outlet')
+    search_fields = ('name', 'outlet__name')
+    readonly_fields = ('deleted_at',)
+class AppointmentSlotInline(admin.TabularInline):
+    model = AppointmentSlot
+    extra = 0
+@admin.register(Booking)
+class BookingAdmin(admin.ModelAdmin):
+    list_display = ('id', 'outlet', 'customer', 'source', 'status', 'booking_start', 'booking_end')
+    list_filter = ('status', 'source', 'outlet')
+    search_fields = ('id', 'customer__name', 'customer__phone_e164')
+    readonly_fields = ('deleted_at',)
+    inlines = [AppointmentSlotInline]
+@admin.register(AppointmentSlot)
+class AppointmentSlotAdmin(admin.ModelAdmin):
+    list_display = ('booking', 'store_service', 'professional', 'resource', 'slot_start', 'slot_end', 'status', 'was_overridden')
+    list_filter = ('status', 'was_overridden')
+    search_fields = ('booking__id', 'store_service__name', 'professional__display_name')
+@admin.register(CommissionRule)
+class CommissionRuleAdmin(admin.ModelAdmin):
+    list_display = ('store_group', 'professional', 'applies_to', 'rate_type', 'rate_value', 'effective_from')
+    list_filter = ('applies_to', 'rate_type')
+    search_fields = ('store_group__name', 'professional__display_name')
+@admin.register(CommissionAccrual)
+class CommissionAccrualAdmin(admin.ModelAdmin):
+    list_display = ('professional', 'invoice_line', 'base_paise', 'commission_paise', 'created_at')
+    search_fields = ('professional__display_name',)
+    readonly_fields = ('id', 'invoice_line', 'professional', 'base_paise', 'commission_paise', 'created_at')
+    def has_change_permission(self, request, obj=None):
+        return False
+@admin.register(CreditNote)
+class CreditNoteAdmin(admin.ModelAdmin):
+    list_display = ('invoice', 'amount_paise', 'created_by', 'created_at')
+    search_fields = ('invoice__invoice_number', 'reason')
+@admin.register(MembershipPlan)
+class MembershipPlanAdmin(admin.ModelAdmin):
+    list_display = ('name', 'store_group', 'price_paise', 'value_paise', 'validity_days', 'is_active')
+    list_filter = ('is_active', 'store_group')
+    search_fields = ('name', 'store_group__name')
+    readonly_fields = ('deleted_at',)
+@admin.register(Membership)
+class MembershipAdmin(admin.ModelAdmin):
+    list_display = ('plan_name', 'customer', 'store_group', 'value_paise_remaining', 'valid_until', 'status')
+    list_filter = ('status',)
+    search_fields = ('plan_name', 'customer__name', 'customer__phone_e164')
+@admin.register(PackagePlan)
+class PackagePlanAdmin(admin.ModelAdmin):
+    list_display = ('name', 'store_group', 'price_paise', 'validity_days', 'is_active')
+    list_filter = ('is_active', 'store_group')
+    search_fields = ('name', 'store_group__name')
+    readonly_fields = ('deleted_at',)
+@admin.register(Package)
+class PackageAdmin(admin.ModelAdmin):
+    list_display = ('name', 'customer', 'store_group', 'valid_until')
+    search_fields = ('name', 'customer__name', 'customer__phone_e164')
+@admin.register(ServiceProduct)
+class ServiceProductAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'quantity_used')
+    search_fields = ('service__name', 'store_service__name', 'product__name')
+@admin.register(StockMovement)
+class StockMovementAdmin(admin.ModelAdmin):
+    list_display = ('product', 'quantity_deducted', 'invoice', 'created_at')
+    list_filter = ('product',)
+    search_fields = ('product__name', 'invoice__invoice_number')
+    readonly_fields = ('id', 'product', 'invoice', 'quantity_deducted', 'reason', 'created_at')
+    def has_change_permission(self, request, obj=None):
+        return False
+class CampaignSendInline(admin.TabularInline):
+    model = CampaignSend
+    extra = 0
+    readonly_fields = ('customer', 'sent_at', 'opened_at')
+@admin.register(Campaign)
+class CampaignAdmin(admin.ModelAdmin):
+    list_display = ('name', 'store_group', 'channel', 'target_type', 'status', 'sent_at')
+    list_filter = ('status', 'channel', 'target_type')
+    search_fields = ('name', 'store_group__name')
+    readonly_fields = ('deleted_at', 'status', 'sent_at')
+    inlines = [CampaignSendInline]
 @admin.register(GlobalCustomer)
 class GlobalCustomerAdmin(admin.ModelAdmin):
     list_display = ('name', 'phone_e164', 'status', 'is_global', 'created_at')
