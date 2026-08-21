@@ -99,42 +99,54 @@ class Store(models.Model):
         ordering = ['-created_at']
     def __str__(self):
         return f"{self.name} — {self.brand.name}"
-class BillingCycle(models.TextChoices):
-    MONTHLY = 'MONTHLY', 'Monthly'
-    QUARTERLY = 'QUARTERLY', 'Quarterly'
-    YEARLY = 'YEARLY', 'Yearly'
-class SubscriptionStatus(models.TextChoices):
-    ACTIVE = 'ACTIVE', 'Active'
-    EXPIRED = 'EXPIRED', 'Expired'
-    CANCELLED = 'CANCELLED', 'Cancelled'
-    TRIAL = 'TRIAL', 'Trial'
-class SubscriptionPlan(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
-    billing_cycle = models.CharField(max_length=20, choices=BillingCycle.choices, default=BillingCycle.MONTHLY)
-    max_stores = models.PositiveIntegerField(default=1)
-    max_staff = models.PositiveIntegerField(default=5)
-    max_customers = models.PositiveIntegerField(default=500)
-    features = models.JSONField(default=list, help_text='List of feature strings e.g. ["AI Analytics", "SMS Marketing"]')
-    is_active = models.BooleanField(default=True)
+    def has_plan_feature(self, feature_name):
+        """True only if this store has an active/trial subscription whose
+        plan actually bundles the named add-on (e.g. 'includes_crm') — a
+        store with no subscription row, a lapsed one, or a plan that
+        doesn't include the feature all resolve to False. No subscription
+        row is treated as no access, not as grandfathered — this is a
+        paywall, not a rollout flag."""
+        sub = getattr(self, 'platform_subscription', None)
+        if not sub or not sub.plan or sub.status not in ('ACTIVE', 'FREE_TRIAL'):
+            return False
+        return bool(getattr(sub.plan, feature_name, False))
+class StorePublicProfile(models.Model):
+    """What a store's microsite (and, once dark-launched, the marketplace)
+    shows. One per store — a microsite query is scoped to exactly one of
+    these, never a list. See customer-app-build-guide.pdf sections 2 & 5.
+
+    The guide's schema names the FK store_group_id/outlet_id (Phase1 terms);
+    this app's customer-facing browsing/booking already runs entirely on the
+    legacy Store model (bridged to Outlet via Store.outlet), so this links to
+    Store directly to stay consistent with every other customer-app screen
+    built this session — store.outlet still gets you to store_group/outlet.
+    """
+    store = models.OneToOneField('Store', on_delete=models.CASCADE, related_name='public_profile')
+    slug = models.SlugField(max_length=80, unique=True, help_text="Public microsite path, e.g. /s/<slug>")
+    custom_domain = models.CharField(max_length=255, blank=True, null=True, unique=True)
+    headline = models.CharField(max_length=255, blank=True, null=True)
+    about = models.TextField(blank=True, null=True)
+    cover_image_url = models.URLField(max_length=500, blank=True, null=True)
+    gallery = models.JSONField(default=list, blank=True, help_text="List of image URLs")
+    amenities = models.JSONField(default=list, blank=True, help_text="List of short strings, e.g. ['Parking', 'AC', 'Wifi']")
+    cancellation_policy_text = models.TextField(blank=True, null=True)
+    is_microsite_live = models.BooleanField(default=True, help_text="Every approved store gets a microsite immediately")
+    marketplace_public = models.BooleanField(default=False, help_text="This store's own opt-in to cross-store discovery — still gated by the city's dark-launch flag")
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
     class Meta:
-        ordering = ['price']
+        db_table = 'store_public_profile'
     def __str__(self):
-        return f"{self.name} — ₹{self.price}/{self.billing_cycle}"
-class BusinessSubscription(models.Model):
-    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name='subscriptions')
-    plan = models.ForeignKey(SubscriptionPlan, on_delete=models.PROTECT, related_name='subscriptions')
-    start_date = models.DateField()
-    end_date = models.DateField()
-    status = models.CharField(max_length=20, choices=SubscriptionStatus.choices, default=SubscriptionStatus.TRIAL)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    class Meta:
-        ordering = ['-created_at']
+        return f"{self.store.name} (/{self.slug})"
+class CityMarketplaceFlag(models.Model):
+    """The dark-launch switch — marketplace discovery is built and populated
+    for every city, but only actually shown once a city clears this flag.
+    Same code, same components either way: a launch decision, not a build one."""
+    city = models.OneToOneField('City', on_delete=models.CASCADE, related_name='marketplace_flag')
+    is_public = models.BooleanField(default=False)
+    min_store_threshold = models.PositiveIntegerField(default=10, help_text="Suggested minimum approved stores before flipping this on")
+    enabled_at = models.DateTimeField(null=True, blank=True)
     def __str__(self):
-        return f"{self.business.name} → {self.plan.name} ({self.status})"
+        return f"{self.city.name}: {'public' if self.is_public else 'dark'}"
 class PlatformSettings(models.Model):
     platform_name = models.CharField(max_length=255, default='NearbyMe')
     support_email = models.EmailField(default='support@nearbyme.in')
@@ -353,12 +365,12 @@ class Invoice(models.Model):
     customer = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices')
     global_customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices', help_text="Phase1 customer identity, for invoices raised from a Booking")
     booking = models.ForeignKey('Booking', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices')
-    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    grand_total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    platform_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Calculated revenue for Nearbyme")
-    gateway_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Calculated payment processing fee")
+    subtotal_paise = models.BigIntegerField(default=0)
+    discount_amount_paise = models.BigIntegerField(default=0)
+    tax_amount_paise = models.BigIntegerField(default=0)
+    grand_total_paise = models.BigIntegerField(default=0)
+    platform_fee_paise = models.BigIntegerField(default=0, help_text="Calculated revenue for Nearbyme")
+    gateway_fee_paise = models.BigIntegerField(default=0, help_text="Calculated payment processing fee")
     status = models.CharField(max_length=20, choices=InvoiceStatus.choices, default=InvoiceStatus.UNPAID)
     requires_manager_approval = models.BooleanField(default=False)
     is_discount_approved = models.BooleanField(default=False)
@@ -375,7 +387,7 @@ class Invoice(models.Model):
             raise ValidationError("Invoice is finalised and cannot be modified.")
         super().save(*args, **kwargs)
     def __str__(self):
-        return f"{self.invoice_number} ({self.store.name}) - ₹{self.grand_total}"
+        return f"{self.invoice_number} ({self.store.name}) - ₹{self.grand_total_paise / 100:.2f}"
     @staticmethod
     def generate_invoice_number(outlet):
         """Next gap-free OUTLET_PREFIX-YYYY-NNNN number. Caller must hold a lock on `outlet`
@@ -393,27 +405,31 @@ class Invoice(models.Model):
             except ValueError:
                 next_seq = 1
         return f"{prefix}-{year}-{next_seq:04d}"
-class InvoiceItem(models.Model):
+class InvoiceLineType(models.TextChoices):
+    SERVICE = 'service', 'Service'
+    PRODUCT = 'product', 'Product'
+class InvoiceLine(models.Model):
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='items')
     service = models.ForeignKey(Service, on_delete=models.SET_NULL, null=True, blank=True)
     store_service = models.ForeignKey('StoreService', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoice_lines', help_text="Phase1 service catalog reference, for lines sourced from a Booking")
     professional = models.ForeignKey('Professional', on_delete=models.SET_NULL, null=True, blank=True, related_name='invoice_lines', help_text="Who performed this line, for commission accrual")
     quantity = models.PositiveIntegerField(default=1)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    line_type = models.CharField(max_length=20, choices=InvoiceLineType.choices, default=InvoiceLineType.SERVICE)
+    unit_price_paise = models.BigIntegerField()
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
-    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_amount_paise = models.BigIntegerField(default=0)
+    total_paise = models.BigIntegerField(default=0)
     def __str__(self):
         name = self.service.name if self.service else "Item"
         return f"{name} (x{self.quantity}) - {self.invoice.invoice_number}"
 class Payment(models.Model):
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='payments')
     method = models.CharField(max_length=20, choices=PaymentMethod.choices)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    amount_paise = models.BigIntegerField()
     transaction_reference = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     def __str__(self):
-        return f"₹{self.amount} via {self.method} for {self.invoice.invoice_number}"
+        return f"₹{self.amount_paise / 100:.2f} via {self.method} for {self.invoice.invoice_number}"
 class Tip(models.Model):
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='tips')
     therapist = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'THERAPIST'})
@@ -533,7 +549,7 @@ class Expense(models.Model):
 class Commission(models.Model):
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='commissions')
     therapist = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'THERAPIST'})
-    invoice_item = models.OneToOneField(InvoiceItem, on_delete=models.CASCADE)
+    invoice_item = models.OneToOneField(InvoiceLine, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     is_paid_out = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -699,6 +715,22 @@ class FavoriteTherapist(models.Model):
         unique_together = ('customer', 'therapist')
     def __str__(self):
         return f"{self.customer.get_full_name()} favorited {self.therapist.get_full_name()}"
+class CustomerFavourite(models.Model):
+    """A saved salon — distinct from FavoriteTherapist (which favourites a
+    login User, for the pre-Phase1 in-store staff list). The build guide
+    names the FK store_group_id/professional_account_id; this links to the
+    legacy Store instead, same deviation StorePublicProfile documents —
+    every customer-facing screen in this app runs on Store, not StoreGroup
+    directly, so this stays consistent with that."""
+    customer = models.ForeignKey('GlobalCustomer', on_delete=models.CASCADE, related_name='favourite_stores')
+    store = models.ForeignKey('Store', on_delete=models.CASCADE, related_name='favourited_by')
+    professional_account = models.ForeignKey('ProfessionalAccount', on_delete=models.SET_NULL, null=True, blank=True, related_name='favourited_at', help_text="Optional: a specific professional at this store the customer prefers")
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        unique_together = ('customer', 'store')
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.customer.name} saved {self.store.name}"
 class StaffDocument(models.Model):
     staff = models.ForeignKey(User, on_delete=models.CASCADE, related_name='documents')
     title = models.CharField(max_length=255)
@@ -875,11 +907,35 @@ class StaffChatMessage(models.Model):
         ordering = ['-timestamp']
     def __str__(self):
         return f"Message by {self.sender.get_full_name()}"
+class Conversation(models.Model):
+    """A direct-message thread between one customer and one therapist."""
+    customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='customer_conversations', limit_choices_to={'role': 'CUSTOMER'})
+    therapist = models.ForeignKey(User, on_delete=models.CASCADE, related_name='therapist_conversations', limit_choices_to={'role': 'THERAPIST'})
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        unique_together = ('customer', 'therapist')
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.customer.get_full_name()} <-> {self.therapist.get_full_name()}"
+class ChatMessage(models.Model):
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_conversation_messages')
+    content = models.TextField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ['created_at']
+    def __str__(self):
+        return f"{self.sender.get_full_name()}: {self.content[:30]}"
 class PlatformSubscriptionPlan(models.Model):
     name = models.CharField(max_length=100)
     monthly_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     commission_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Commission taken on online bookings")
-    features = models.JSONField(default=dict)
+    includes_crm = models.BooleanField(default=False, help_text="CRM add-on bundled into this plan")
+    includes_analytics = models.BooleanField(default=False, help_text="Analytics add-on bundled into this plan")
+    includes_ai_assistant = models.BooleanField(default=False, help_text="AI assistant add-on bundled into this plan")
+    includes_premium_listing = models.BooleanField(default=False, help_text="Sponsored/boosted placement in customer search bundled into this plan")
+    features = models.JSONField(default=dict, blank=True, help_text="Any other feature flags not covered by the fields above")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     def __str__(self):
@@ -914,6 +970,114 @@ class PlatformInvoice(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     def __str__(self):
         return f"Invoice {self.id} for {self.store.name} - ₹{self.amount} ({self.status})"
+class PlatformCommissionLedger(models.Model):
+    """Marketplace commission — the platform's cut of a completed online booking,
+    computed from the store's active PlatformSubscriptionPlan.commission_percent."""
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='commission_ledger_entries')
+    booking = models.ForeignKey('Booking', on_delete=models.SET_NULL, null=True, blank=True, related_name='commission_ledger_entries')
+    gross_amount_paise = models.BigIntegerField(help_text="Booking total the commission was calculated on, in integer paise")
+    commission_percent_applied = models.DecimalField(max_digits=5, decimal_places=2)
+    commission_paise = models.BigIntegerField(help_text="Platform's commission on this booking, in integer paise")
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'platform_commission_ledger'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.store.name}: ₹{self.commission_paise / 100:.2f} commission"
+class AdPlacement(models.TextChoices):
+    HOME_BANNER = 'HOME_BANNER', 'Home Banner'
+    SEARCH_TOP = 'SEARCH_TOP', 'Search Top Result'
+    CATEGORY_FEATURED = 'CATEGORY_FEATURED', 'Category Featured'
+class AdCampaignStatus(models.TextChoices):
+    DRAFT = 'DRAFT', 'Draft'
+    ACTIVE = 'ACTIVE', 'Active'
+    PAUSED = 'PAUSED', 'Paused'
+    ENDED = 'ENDED', 'Ended'
+class AdCampaign(models.Model):
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='ad_campaigns')
+    title = models.CharField(max_length=150)
+    placement = models.CharField(max_length=20, choices=AdPlacement.choices)
+    status = models.CharField(max_length=10, choices=AdCampaignStatus.choices, default=AdCampaignStatus.DRAFT)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    budget_paise = models.BigIntegerField(help_text="Amount the store paid for this campaign, in integer paise")
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'ad_campaign'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.title} ({self.store.name}, {self.status})"
+class PaymentGateway(models.TextChoices):
+    RAZORPAY = 'RAZORPAY', 'Razorpay'
+    STRIPE = 'STRIPE', 'Stripe'
+    PAYU = 'PAYU', 'PayU'
+    OTHER = 'OTHER', 'Other'
+class PaymentGatewayRevenue(models.Model):
+    """No live gateway integration exists yet — this is a manually-recorded
+    ledger for staff to log gateway fee revenue from their dashboard."""
+    store = models.ForeignKey(Store, on_delete=models.SET_NULL, null=True, blank=True, related_name='gateway_revenue_entries', help_text="Blank for platform-wide gateway revenue")
+    gateway = models.CharField(max_length=20, choices=PaymentGateway.choices)
+    period_month = models.CharField(max_length=7, help_text="MM-YYYY")
+    gross_volume_paise = models.BigIntegerField(help_text="Total payment volume processed, in integer paise")
+    gateway_fee_paise = models.BigIntegerField(help_text="Fee charged by the gateway, in integer paise")
+    net_revenue_paise = models.BigIntegerField(help_text="Platform's markup/net revenue on the gateway fee, in integer paise", default=0)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'payment_gateway_revenue'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.gateway} {self.period_month}: ₹{self.net_revenue_paise / 100:.2f} net"
+class InsurancePartnerStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending'
+    ACTIVE = 'ACTIVE', 'Active'
+    INACTIVE = 'INACTIVE', 'Inactive'
+class InsurancePartner(models.Model):
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True, null=True)
+    revenue_share_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Platform's cut of premiums sold through this partnership")
+    contact_email = models.EmailField(blank=True, null=True)
+    contact_phone = models.CharField(max_length=20, blank=True, null=True)
+    status = models.CharField(max_length=10, choices=InsurancePartnerStatus.choices, default=InsurancePartnerStatus.PENDING)
+    contract_start = models.DateField(blank=True, null=True)
+    contract_end = models.DateField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'insurance_partner'
+        ordering = ['name']
+    def __str__(self):
+        return f"{self.name} ({self.status})"
+class MarketplaceProduct(models.Model):
+    """Platform-wide product catalog sold across stores — distinct from the
+    per-store Product model used for a single store's own inventory."""
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True, null=True)
+    vendor_name = models.CharField(max_length=150, blank=True, null=True)
+    category = models.CharField(max_length=100, blank=True, null=True)
+    price_paise = models.BigIntegerField(help_text="Price in integer paise")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'marketplace_product'
+        ordering = ['name']
+    def __str__(self):
+        return f"{self.name} (₹{self.price_paise / 100:.2f})"
+class TrainingCourse(models.Model):
+    """Platform-wide training/course catalog — distinct from StaffTraining,
+    which records a single store's internal staff training history."""
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True, null=True)
+    instructor_name = models.CharField(max_length=150, blank=True, null=True)
+    category = models.CharField(max_length=100, blank=True, null=True)
+    duration_hours = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    price_paise = models.BigIntegerField(help_text="Price in integer paise")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'training_course'
+        ordering = ['title']
+    def __str__(self):
+        return f"{self.title} (₹{self.price_paise / 100:.2f})"
 import re
 from django.utils import timezone
 def normalize_e164(phone: str) -> str:
@@ -926,6 +1090,18 @@ def normalize_e164(phone: str) -> str:
         else:
             cleaned = f"+{cleaned}"
     return cleaned
+class PhoneOTP(models.Model):
+    """Short-lived login code for the phone-is-the-account customer flow —
+    no password, no signup form. See customer-app-build-guide.pdf rule 26."""
+    phone_e164 = models.CharField(max_length=20, db_index=True)
+    code_hash = models.CharField(max_length=64)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    is_used = models.BooleanField(default=False)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'phone_otp'
+        ordering = ['-created_at']
 class SoftDeleteQuerySet(models.QuerySet):
     def delete(self):
         return self.update(deleted_at=timezone.now())
@@ -1226,6 +1402,7 @@ class StoreService(SoftDeleteModel):
     name = models.CharField(max_length=200)
     default_price_paise = models.BigIntegerField(help_text="Price stored strictly in integer paise")
     duration_min = models.IntegerField()
+    deposit_percentage = models.PositiveSmallIntegerField(default=20, help_text="What percentage of the price a customer can pay online as a deposit, balance due at venue")
     is_active_in_store = models.BooleanField(default=True, help_text="Defaults TRUE immediately so store can bill same minute")
     marketplace_status = models.CharField(max_length=20, choices=StoreServiceMarketplaceStatus.choices, default=StoreServiceMarketplaceStatus.PENDING)
     submitted_at = models.DateTimeField(auto_now_add=True)
@@ -1258,7 +1435,7 @@ class Professional(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='professionals')
     outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='professionals')
-    user_account = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_profiles', help_text="Nullable until the invited professional accepts")
+    user_account = models.ForeignKey('ProfessionalAccount', on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_profiles', help_text="Nullable until the invited professional accepts. Points to the professional's global identity, not their store-login User.")
     display_name = models.CharField(max_length=255)
     display_role = models.CharField(max_length=100, blank=True, null=True, help_text="Free text, e.g. 'Senior Stylist'")
     phone_e164 = models.CharField(max_length=20, null=True, blank=True, db_index=True)
@@ -1348,6 +1525,7 @@ class BookingStatus(models.TextChoices):
     NO_SHOW = 'no_show', 'No Show'
 class Booking(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking_code = models.CharField(max_length=20, unique=True, null=True, blank=True, editable=False, help_text="Human-readable reference, e.g. BKG-000123. Auto-assigned on first save.")
     outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='bookings')
     customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='bookings')
     source = models.CharField(max_length=20, choices=BookingSource.choices, default=BookingSource.WALK_IN)
@@ -1355,15 +1533,36 @@ class Booking(SoftDeleteModel):
     booked_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='bookings_made', help_text="Staff member who created this booking")
     booking_start = models.DateTimeField()
     booking_end = models.DateTimeField()
+    is_home_service = models.BooleanField(default=False)
+    service_address = models.TextField(blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
+    on_the_way_at = models.DateTimeField(null=True, blank=True, help_text="Home-service only — set when the professional marks themselves en route")
+    therapist_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    therapist_lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    location_updated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancellation_reason = models.TextField(blank=True, null=True)
     class Meta:
         db_table = 'booking'
         ordering = ['-booking_start']
+    def save(self, *args, **kwargs):
+        if not self.booking_code:
+            from django.db import transaction
+            with transaction.atomic():
+                last = Booking.objects.select_for_update().exclude(booking_code__isnull=True).order_by('-booking_code').first()
+                next_seq = 1
+                if last and last.booking_code:
+                    try:
+                        next_seq = int(last.booking_code.rsplit('-', 1)[-1]) + 1
+                    except ValueError:
+                        next_seq = 1
+                self.booking_code = f"BKG-{next_seq:06d}"
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
     def __str__(self):
-        return f"Booking {self.id} @ {self.outlet.name} ({self.status})"
+        return f"Booking {self.booking_code or self.id} @ {self.outlet.name} ({self.status})"
 class AppointmentSlotStatus(models.TextChoices):
     SCHEDULED = 'scheduled', 'Scheduled'
     STARTED = 'started', 'Started'
@@ -1388,6 +1587,96 @@ class AppointmentSlot(models.Model):
         ordering = ['slot_start']
     def __str__(self):
         return f"{self.store_service.name} {self.slot_start} ({self.status})"
+class SlotHoldStatus(models.TextChoices):
+    HELD = 'held', 'Held'
+    CONVERTED = 'converted', 'Converted'
+    EXPIRED = 'expired', 'Expired'
+    RELEASED = 'released', 'Released'
+class SlotHold(models.Model):
+    """Short-lived reservation while a guest completes OTP + payment, so the
+    slot they're looking at can't be taken out from under them. See
+    customer-app-build-guide.pdf section 6 — 'the double-booking problem'."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='slot_holds')
+    store_service = models.ForeignKey('StoreService', on_delete=models.CASCADE, related_name='slot_holds')
+    professional = models.ForeignKey(Professional, on_delete=models.SET_NULL, null=True, blank=True, related_name='slot_holds')
+    resource = models.ForeignKey(Resource, on_delete=models.SET_NULL, null=True, blank=True, related_name='slot_holds')
+    slot_start = models.DateTimeField()
+    slot_end = models.DateTimeField()
+    customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='slot_holds')
+    session_token = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(max_length=20, choices=SlotHoldStatus.choices, default=SlotHoldStatus.HELD)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'slot_hold'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.store_service.name} {self.slot_start} ({self.status})"
+class QueueEntryStatus(models.TextChoices):
+    WAITING = 'waiting', 'Waiting'
+    CALLED = 'called', 'Called'
+    IN_SERVICE = 'in_service', 'In Service'
+    COMPLETED = 'completed', 'Completed'
+    CANCELLED = 'cancelled', 'Cancelled'
+    NO_SHOW = 'no_show', 'No Show'
+DEFAULT_QUEUE_WAIT_MINUTES = 15
+class QueueEntry(models.Model):
+    """A walk-in physically waiting at the outlet right now — reception's
+    'who's here' board, distinct from `Waitlist` (a future-date preference
+    list) and from `SlotHold`/`Booking` (a fixed pre-booked time)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    outlet = models.ForeignKey(Outlet, on_delete=models.CASCADE, related_name='queue_entries')
+    customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='queue_entries')
+    guest_name = models.CharField(max_length=255, blank=True, null=True, help_text="For walk-ins without an account")
+    guest_phone = models.CharField(max_length=20, blank=True, null=True)
+    store_service = models.ForeignKey('StoreService', on_delete=models.SET_NULL, null=True, blank=True, related_name='queue_entries')
+    professional = models.ForeignKey(Professional, on_delete=models.SET_NULL, null=True, blank=True, related_name='queue_entries', help_text="Preferred professional, if any")
+    notes = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=QueueEntryStatus.choices, default=QueueEntryStatus.WAITING)
+    checked_in_at = models.DateTimeField(auto_now_add=True)
+    called_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    class Meta:
+        db_table = 'queue_entry'
+        ordering = ['checked_in_at']
+    def __str__(self):
+        return f"{self.guest_name or (self.customer.name if self.customer else 'Walk-in')} @ {self.outlet.name} ({self.status})"
+class OnlinePaymentStatus(models.TextChoices):
+    CREATED = 'created', 'Created'
+    CAPTURED = 'captured', 'Captured'
+    FAILED = 'failed', 'Failed'
+    REFUNDED = 'refunded', 'Refunded'
+class OnlinePaymentType(models.TextChoices):
+    FULL = 'full', 'Full payment'
+    DEPOSIT = 'deposit', 'Deposit'
+class OnlinePayment(models.Model):
+    """A Razorpay order raised for a Phase1 online booking — store revenue
+    collected at checkout, distinct from Tip. See build guide's
+    online_payment data model addition."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    hold = models.ForeignKey(SlotHold, on_delete=models.SET_NULL, null=True, blank=True, related_name='online_payments')
+    store_service = models.ForeignKey('StoreService', on_delete=models.SET_NULL, null=True, blank=True, related_name='online_payments')
+    booking = models.OneToOneField('Booking', on_delete=models.SET_NULL, null=True, blank=True, related_name='online_payment')
+    customer = models.ForeignKey('GlobalCustomer', on_delete=models.SET_NULL, null=True, blank=True, related_name='online_payments')
+    payment_type = models.CharField(max_length=10, choices=OnlinePaymentType.choices, default=OnlinePaymentType.FULL)
+    amount_paise = models.BigIntegerField(help_text="Amount actually charged via the gateway — the deposit amount when payment_type=deposit")
+    total_amount_paise = models.BigIntegerField(default=0, help_text="Full service price. Equals amount_paise for a full payment; balance_due = total_amount_paise - amount_paise for a deposit")
+    currency = models.CharField(max_length=3, default='INR')
+    gateway = models.CharField(max_length=20, default='razorpay')
+    gateway_order_id = models.CharField(max_length=100, unique=True)
+    gateway_payment_id = models.CharField(max_length=100, blank=True, null=True)
+    gateway_signature = models.CharField(max_length=255, blank=True, null=True)
+    status = models.CharField(max_length=20, choices=OnlinePaymentStatus.choices, default=OnlinePaymentStatus.CREATED)
+    confirmed_at = models.DateTimeField(null=True, blank=True, help_text="When the gateway signature was verified and status became CAPTURED")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        db_table = 'online_payment'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"₹{self.amount_paise / 100:.2f} ({self.status}) — {self.gateway_order_id}"
 class CommissionAppliesTo(models.TextChoices):
     SERVICE = 'service', 'Service'
     PRODUCT = 'product', 'Product'
@@ -1411,7 +1700,7 @@ class CommissionRule(models.Model):
         return f"{who}: {self.rate_value} ({self.rate_type}) on {self.applies_to}"
 class CommissionAccrual(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    invoice_line = models.ForeignKey('InvoiceItem', on_delete=models.CASCADE, related_name='commission_accruals')
+    invoice_line = models.ForeignKey('InvoiceLine', on_delete=models.CASCADE, related_name='commission_accruals')
     professional = models.ForeignKey(Professional, on_delete=models.CASCADE, related_name='commission_accruals')
     base_paise = models.BigIntegerField(help_text="Line amount commission was calculated on, in integer paise")
     commission_paise = models.BigIntegerField(help_text="Computed commission amount, in integer paise")
@@ -1661,3 +1950,174 @@ class ImpersonationSession(models.Model):
         ordering = ['-started_at']
     def __str__(self):
         return f"Impersonate {self.store_group_id} by {self.internal_user_id} ({self.mode})"
+class ProfessionalAccount(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_account', help_text="Null until the professional accepts their invite and creates a login")
+    phone_e164 = models.CharField(max_length=20, null=True, blank=True, db_index=True)
+    name = models.CharField(max_length=255)
+    bio = models.TextField(blank=True, null=True)
+    years_experience = models.PositiveIntegerField(default=0)
+    profile_photo_url = models.URLField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'professional_account'
+        ordering = ['name']
+    def save(self, *args, **kwargs):
+        if self.phone_e164:
+            self.phone_e164 = normalize_e164(self.phone_e164)
+        super().save(*args, **kwargs)
+    def __str__(self):
+        return f"{self.name} ({self.user.email})"
+class ProfessionalPortfolio(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.CASCADE, related_name='portfolio_items')
+    media_url = models.URLField()
+    caption = models.CharField(max_length=255, blank=True, null=True)
+    display_order = models.PositiveIntegerField(default=0)
+    class Meta:
+        db_table = 'professional_portfolio'
+        ordering = ['display_order']
+    def __str__(self):
+        return f"Portfolio item for {self.professional_account.name}"
+class ProfessionalCertification(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.CASCADE, related_name='certifications')
+    title = models.CharField(max_length=255)
+    issuer = models.CharField(max_length=255, blank=True, null=True)
+    year = models.PositiveIntegerField(blank=True, null=True)
+    media_url = models.URLField(blank=True, null=True)
+    class Meta:
+        db_table = 'professional_certification'
+        ordering = ['-year']
+    def __str__(self):
+        return f"{self.title} ({self.issuer or 'N/A'}) - {self.professional_account.name}"
+class PayoutDestinationType(models.TextChoices):
+    UPI_VPA = 'upi_vpa', 'UPI VPA'
+    BANK = 'bank', 'Bank Account'
+class PayoutVerificationStatus(models.TextChoices):
+    UNVERIFIED = 'unverified', 'Unverified'
+    PENDING = 'pending', 'Pending'
+    VERIFIED = 'verified', 'Verified'
+    FAILED = 'failed', 'Failed'
+class PayoutDestination(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.CASCADE, related_name='payout_destinations')
+    type = models.CharField(max_length=20, choices=PayoutDestinationType.choices)
+    vpa = models.CharField(max_length=255, blank=True, null=True, help_text="UPI VPA, e.g. name@bank")
+    bank_account_masked = models.CharField(max_length=50, blank=True, null=True, help_text="Masked account number, e.g. XXXX1234")
+    holder_name = models.CharField(max_length=255)
+    verification_status = models.CharField(max_length=20, choices=PayoutVerificationStatus.choices, default=PayoutVerificationStatus.UNVERIFIED)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'payout_destination'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"{self.get_type_display()} for {self.professional_account.name} ({self.verification_status})"
+class ProfessionalTipMethod(models.TextChoices):
+    UPI_DEEPLINK = 'upi_deeplink', 'UPI Deep Link'
+    VPA_DIRECT = 'vpa_direct', 'VPA Direct'
+class ProfessionalTipStatus(models.TextChoices):
+    INITIATED = 'initiated', 'Initiated'
+    CONFIRMED = 'confirmed', 'Confirmed'
+    FAILED = 'failed', 'Failed'
+    UNCONFIRMED = 'unconfirmed', 'Unconfirmed'
+class ProfessionalTip(models.Model):
+    """Direct professional-to-customer tip. Money never touches the platform;
+    this row exists purely to record and reconcile intent (see apps.core.models.Tip
+    for the older, unrelated invoice-based tip-to-wallet flow)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='professional_tips')
+    appointment_slot = models.ForeignKey(AppointmentSlot, on_delete=models.CASCADE, related_name='professional_tips')
+    professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.CASCADE, related_name='tips_received')
+    customer = models.ForeignKey(GlobalCustomer, on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_tips_given')
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_tips')
+    amount_paise = models.BigIntegerField(help_text="Tip amount stored strictly in integer paise")
+    method = models.CharField(max_length=20, choices=ProfessionalTipMethod.choices)
+    status = models.CharField(max_length=20, choices=ProfessionalTipStatus.choices, default=ProfessionalTipStatus.INITIATED)
+    payment_ref = models.CharField(max_length=255, blank=True, null=True, help_text="UPI transaction ref / provider reference, if captured")
+    initiated_at = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    class Meta:
+        db_table = 'professional_tip'
+        ordering = ['-initiated_at']
+    def __str__(self):
+        return f"₹{self.amount_paise / 100:.2f} tip for {self.professional_account.name} ({self.status})"
+class ReviewModerationStatus(models.TextChoices):
+    VISIBLE = 'visible', 'Visible'
+    FLAGGED = 'flagged', 'Flagged'
+    HIDDEN = 'hidden', 'Hidden'
+class ProfessionalReview(models.Model):
+    """Booking-linked review of a store + optionally a specific professional
+    (see apps.core.models.Review for the older, unrelated store-only review flow)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='professional_reviews')
+    customer = models.ForeignKey(GlobalCustomer, on_delete=models.SET_NULL, null=True, blank=True, related_name='professional_reviews_given')
+    store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='professional_reviews')
+    professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviews_received')
+    store_rating = models.PositiveSmallIntegerField(help_text="Rating from 1 to 5")
+    professional_rating = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Rating from 1 to 5, only when a professional is tagged")
+    comment = models.TextField(blank=True, null=True)
+    media_url = models.URLField(max_length=500, blank=True, null=True, help_text="Optional photo/video attached to the review")
+    moderation_status = models.CharField(max_length=20, choices=ReviewModerationStatus.choices, default=ReviewModerationStatus.VISIBLE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'professional_review'
+        unique_together = ('booking', 'customer')
+        ordering = ['-created_at']
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.professional_account_id:
+            ReputationAggregate.recompute(self.professional_account)
+    def __str__(self):
+        return f"Review for {self.store_group.name} ({self.store_rating}★ store)"
+class ReviewResponse(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    review = models.OneToOneField(ProfessionalReview, on_delete=models.CASCADE, related_name='response')
+    professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.CASCADE, related_name='review_responses')
+    response_text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'review_response'
+        ordering = ['-created_at']
+    def __str__(self):
+        return f"Response by {self.professional_account.name} to review {self.review_id}"
+class ReputationAggregate(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional_account = models.OneToOneField(ProfessionalAccount, on_delete=models.CASCADE, related_name='reputation')
+    avg_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    total_reviews = models.PositiveIntegerField(default=0)
+    total_services = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        db_table = 'reputation_aggregate'
+    @classmethod
+    def recompute(cls, professional_account):
+        from django.db.models import Avg, Count
+        agg = ProfessionalReview.objects.filter(
+            professional_account=professional_account,
+            moderation_status=ReviewModerationStatus.VISIBLE,
+            professional_rating__isnull=False,
+        ).aggregate(avg=Avg('professional_rating'), count=Count('id'))
+        total_services = AppointmentSlot.objects.filter(
+            professional__user_account=professional_account,
+            status=AppointmentSlotStatus.DONE,
+        ).count()
+        obj, _ = cls.objects.get_or_create(professional_account=professional_account)
+        obj.avg_rating = agg['avg'] or 0
+        obj.total_reviews = agg['count'] or 0
+        obj.total_services = total_services
+        obj.save()
+        return obj
+    def __str__(self):
+        return f"{self.professional_account.name}: {self.avg_rating}★ ({self.total_reviews} reviews)"
+class ReputationConsent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    professional_account = models.OneToOneField(ProfessionalAccount, on_delete=models.CASCADE, related_name='reputation_consent')
+    portability_granted = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        db_table = 'reputation_consent'
+    def __str__(self):
+        return f"{self.professional_account.name}: portability {'granted' if self.portability_granted else 'not granted'}"

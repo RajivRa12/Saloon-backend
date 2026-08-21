@@ -19,7 +19,14 @@ from .models import (
     GlobalCustomer, CustomerStoreLink, CustomerConsent, CustomerMergeLog,
     AuditLog, ImpersonationSession,
     Vendor, Product, Room, Shift, Attendance, LeaveRequest, MarketingCampaign, DailyRegister,
-    Payroll, ServiceProduct, StockMovement
+    Payroll, ServiceProduct, StockMovement,
+    ProfessionalAccount, ProfessionalPortfolio, ProfessionalCertification,
+    PayoutDestination, ProfessionalTip,
+    ProfessionalReview, ReviewResponse, ReputationAggregate, ReputationConsent,
+    PlatformSubscriptionPlan, StoreSubscription, PlatformInvoice,
+    PlatformCommissionLedger, AdCampaign, PaymentGatewayRevenue,
+    InsurancePartner, MarketplaceProduct, TrainingCourse,
+    StorePublicProfile, CityMarketplaceFlag, OnlinePayment, QueueEntry, SlotHold, CustomerFavourite,
 )
 admin.site.site_header = "NearByMe Master Admin Panel (Phase 1 | v2)"
 admin.site.site_title = "NearByMe Master Admin"
@@ -57,13 +64,127 @@ class BrandAdmin(admin.ModelAdmin):
     ordering = ('-created_at',)
 @admin.register(Store)
 class StoreAdmin(admin.ModelAdmin):
-    list_display = ('name', 'brand', 'business', 'contact_number', 'email', 'city_from_address', 'status', 'created_at')
-    list_filter = ('status', 'brand', 'business', 'currency', 'timezone')
+    list_display = ('name', 'brand', 'business', 'contact_number', 'email', 'city_from_address', 'status', 'is_premium_listing', 'created_at')
+    list_filter = ('status', 'is_premium_listing', 'brand', 'business', 'currency', 'timezone')
+    list_editable = ('is_premium_listing',)
     search_fields = ('name', 'email', 'contact_number', 'address')
     ordering = ('-created_at',)
     def city_from_address(self, obj):
         return obj.address[:30] + '...' if len(obj.address) > 30 else obj.address
     city_from_address.short_description = 'Address'
+@admin.register(StorePublicProfile)
+class StorePublicProfileAdmin(admin.ModelAdmin):
+    list_display = ('store', 'slug', 'is_microsite_live', 'marketplace_public', 'created_at')
+    list_filter = ('is_microsite_live', 'marketplace_public')
+    list_editable = ('is_microsite_live', 'marketplace_public')
+    search_fields = ('store__name', 'slug', 'custom_domain')
+    autocomplete_fields = ('store',)
+    ordering = ('-created_at',)
+@admin.register(CityMarketplaceFlag)
+class CityMarketplaceFlagAdmin(admin.ModelAdmin):
+    list_display = ('city', 'is_public', 'min_store_threshold', 'enabled_at')
+    list_filter = ('is_public',)
+    list_editable = ('is_public', 'min_store_threshold')
+    search_fields = ('city__name',)
+    def save_model(self, request, obj, form, change):
+        if obj.is_public and not obj.enabled_at:
+            obj.enabled_at = timezone.now()
+        super().save_model(request, obj, form, change)
+@admin.register(QueueEntry)
+class QueueEntryAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'outlet', 'status', 'checked_in_at', 'called_at', 'started_at', 'completed_at')
+    list_filter = ('status', 'outlet')
+    search_fields = ('guest_name', 'guest_phone', 'customer__name', 'customer__phone_e164')
+    autocomplete_fields = ('outlet', 'customer', 'store_service')
+    readonly_fields = ('id', 'checked_in_at')
+    ordering = ('-checked_in_at',)
+@admin.register(SlotHold)
+class SlotHoldAdmin(admin.ModelAdmin):
+    list_display = ('store_service', 'professional', 'slot_start', 'slot_end', 'status', 'expires_at', 'customer', 'created_at')
+    list_filter = ('status', 'outlet')
+    list_editable = ('status',)
+    search_fields = ('session_token', 'customer__name', 'customer__phone_e164', 'store_service__name')
+    autocomplete_fields = ('outlet', 'store_service', 'professional', 'resource', 'customer')
+    readonly_fields = ('id', 'created_at')
+    ordering = ('-created_at',)
+@admin.register(OnlinePayment)
+class OnlinePaymentAdmin(admin.ModelAdmin):
+    list_display = ('gateway_order_id', 'store_service', 'payment_type', 'amount_paise', 'total_amount_paise', 'status', 'booking', 'customer', 'confirmed_at', 'created_at')
+    list_filter = ('status', 'gateway')
+    search_fields = ('gateway_order_id', 'gateway_payment_id', 'customer__name', 'customer__phone_e164')
+    autocomplete_fields = ('store_service', 'booking', 'customer')
+    readonly_fields = ('id', 'confirmed_at', 'created_at', 'updated_at')
+    ordering = ('-created_at',)
+@admin.register(PlatformSubscriptionPlan)
+class PlatformSubscriptionPlanAdmin(admin.ModelAdmin):
+    list_display = ('name', 'monthly_price', 'commission_percent', 'includes_crm', 'includes_analytics', 'includes_ai_assistant', 'includes_premium_listing', 'is_active', 'created_at')
+    list_filter = ('is_active', 'includes_crm', 'includes_analytics', 'includes_ai_assistant', 'includes_premium_listing')
+    list_editable = ('is_active', 'includes_crm', 'includes_analytics', 'includes_ai_assistant', 'includes_premium_listing')
+    search_fields = ('name',)
+    ordering = ('monthly_price',)
+@admin.register(StoreSubscription)
+class StoreSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ('store', 'plan', 'status', 'current_period_end', 'stripe_subscription_id', 'created_at')
+    list_filter = ('status', 'plan')
+    list_editable = ('status',)
+    search_fields = ('store__name', 'stripe_customer_id', 'stripe_subscription_id')
+    autocomplete_fields = ('store',)
+    ordering = ('-created_at',)
+@admin.register(PlatformInvoice)
+class PlatformInvoiceAdmin(admin.ModelAdmin):
+    list_display = ('store', 'amount', 'status', 'stripe_invoice_id', 'created_at')
+    list_filter = ('status',)
+    search_fields = ('store__name', 'stripe_invoice_id', 'description')
+    autocomplete_fields = ('store',)
+    ordering = ('-created_at',)
+    def has_add_permission(self, request):
+        return False
+@admin.register(PlatformCommissionLedger)
+class PlatformCommissionLedgerAdmin(admin.ModelAdmin):
+    list_display = ('store', 'booking', 'gross_amount_paise', 'commission_percent_applied', 'commission_paise', 'created_at')
+    list_filter = ('commission_percent_applied',)
+    search_fields = ('store__name',)
+    autocomplete_fields = ('store',)
+    ordering = ('-created_at',)
+    def has_add_permission(self, request):
+        # Auto-computed when a booking completes (see apps/store_erp/views.py BookingViewSet.complete).
+        return False
+@admin.register(AdCampaign)
+class AdCampaignAdmin(admin.ModelAdmin):
+    list_display = ('title', 'store', 'placement', 'status', 'start_date', 'end_date', 'budget_paise', 'created_at')
+    list_filter = ('placement', 'status')
+    list_editable = ('status',)
+    search_fields = ('title', 'store__name')
+    autocomplete_fields = ('store',)
+    ordering = ('-created_at',)
+@admin.register(PaymentGatewayRevenue)
+class PaymentGatewayRevenueAdmin(admin.ModelAdmin):
+    list_display = ('gateway', 'period_month', 'store', 'gross_volume_paise', 'gateway_fee_paise', 'net_revenue_paise', 'created_at')
+    list_filter = ('gateway',)
+    search_fields = ('store__name', 'period_month', 'notes')
+    autocomplete_fields = ('store',)
+    ordering = ('-created_at',)
+@admin.register(InsurancePartner)
+class InsurancePartnerAdmin(admin.ModelAdmin):
+    list_display = ('name', 'status', 'revenue_share_percent', 'contact_email', 'contract_start', 'contract_end')
+    list_filter = ('status',)
+    list_editable = ('status',)
+    search_fields = ('name', 'contact_email')
+    ordering = ('name',)
+@admin.register(MarketplaceProduct)
+class MarketplaceProductAdmin(admin.ModelAdmin):
+    list_display = ('name', 'vendor_name', 'category', 'price_paise', 'is_active', 'created_at')
+    list_filter = ('is_active', 'category')
+    list_editable = ('is_active',)
+    search_fields = ('name', 'vendor_name', 'category')
+    ordering = ('name',)
+@admin.register(TrainingCourse)
+class TrainingCourseAdmin(admin.ModelAdmin):
+    list_display = ('title', 'instructor_name', 'category', 'duration_hours', 'price_paise', 'is_active', 'created_at')
+    list_filter = ('is_active', 'category')
+    list_editable = ('is_active',)
+    search_fields = ('title', 'instructor_name', 'category')
+    ordering = ('title',)
 @admin.register(PlatformSettings)
 class PlatformSettingsAdmin(admin.ModelAdmin):
     list_display = ('platform_name', 'support_email', 'default_currency', 'gst_percentage', 'maintenance_mode')
@@ -103,14 +224,14 @@ class AppointmentItemAdmin(admin.ModelAdmin):
     list_display = ('appointment', 'service', 'therapist', 'price')
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    list_display = ('invoice_number', 'store', 'outlet', 'grand_total', 'status', 'finalised_at', 'created_at')
+    list_display = ('invoice_number', 'store', 'outlet', 'grand_total_paise', 'status', 'finalised_at', 'created_at')
     list_filter = ('status', 'store', 'outlet')
     search_fields = ('invoice_number', 'customer__email')
     date_hierarchy = 'created_at'
     readonly_fields = ('finalised_at',)
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    list_display = ('invoice', 'method', 'amount', 'created_at')
+    list_display = ('invoice', 'method', 'amount_paise', 'created_at')
     list_filter = ('method',)
 @admin.register(MembershipTier)
 class MembershipTierAdmin(admin.ModelAdmin):
@@ -202,8 +323,8 @@ class OutletAppointmentInline(admin.TabularInline):
         return False
 class OutletInvoiceInline(admin.TabularInline):
     model = Invoice
-    fields = ('invoice_number', 'customer', 'grand_total', 'status', 'created_at')
-    readonly_fields = ('invoice_number', 'customer', 'grand_total', 'status', 'created_at')
+    fields = ('invoice_number', 'customer', 'grand_total_paise', 'status', 'created_at')
+    readonly_fields = ('invoice_number', 'customer', 'grand_total_paise', 'status', 'created_at')
     extra = 0
     max_num = 0
     verbose_name = "Recent POS Invoice"
@@ -394,8 +515,9 @@ class CanonicalServiceAdmin(admin.ModelAdmin):
     readonly_fields = ('deleted_at',)
 @admin.register(StoreService)
 class StoreServiceAdmin(admin.ModelAdmin):
-    list_display = ('name', 'store_group', 'canonical_service', 'default_price_paise', 'duration_min', 'is_active_in_store', 'marketplace_status', 'submitted_at')
+    list_display = ('name', 'store_group', 'canonical_service', 'default_price_paise', 'deposit_percentage', 'duration_min', 'is_active_in_store', 'marketplace_status', 'submitted_at')
     list_filter = ('marketplace_status', 'is_active_in_store')
+    list_editable = ('deposit_percentage',)
     search_fields = ('name', 'store_group__name')
     readonly_fields = ('deleted_at',)
 @admin.register(StoreServiceOutletOverride)
@@ -521,6 +643,12 @@ class CustomerConsentAdmin(admin.ModelAdmin):
 class CustomerMergeLogAdmin(admin.ModelAdmin):
     list_display = ('surviving_customer_id', 'merged_customer_id', 'merged_by', 'created_at', 'reverted_at')
     search_fields = ('merged_by', 'surviving_customer_id', 'merged_customer_id')
+@admin.register(CustomerFavourite)
+class CustomerFavouriteAdmin(admin.ModelAdmin):
+    list_display = ('customer', 'store', 'professional_account', 'created_at')
+    search_fields = ('customer__name', 'customer__phone_e164', 'store__name')
+    autocomplete_fields = ('customer', 'store', 'professional_account')
+    ordering = ('-created_at',)
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ('action', 'actor_type', 'actor_id', 'entity_type', 'entity_id', 'ip_address', 'created_at')
@@ -540,7 +668,8 @@ def custom_get_app_list(request, app_label=None):
             'Internal users', 'Impersonation sessions', 'Groups'
         ],
         '🏬 2. Store Groups & Branch Directory': [
-            'Store groups', 'Outlets', 'Kyc documents', 'Store status histories', 'Cities', 'Zones'
+            'Store groups', 'Outlets', 'Kyc documents', 'Store status histories', 'Cities', 'Zones',
+            'Store public profiles', 'City marketplace flags',
         ],
         '💳 3. Platform Access Plans & Codes': [
             'Plans', 'Access codes', 'Access code redemptions'
@@ -550,10 +679,11 @@ def custom_get_app_list(request, app_label=None):
             'Store services', 'Store service outlet overrides'
         ],
         '🌍 5. Global Customer & Consent Governance': [
-            'Global customers', 'Customer store links', 'Customer consents', 'Customer merge logs'
+            'Global customers', 'Customer store links', 'Customer consents', 'Customer merge logs', 'Customer favourites'
         ],
         '📊 6. Store ERP & Daily Branch Operations': [
-            'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Expenses', 'Staff incentives'
+            'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Expenses', 'Staff incentives',
+            'Online payments', 'Queue entries', 'Slot holds',
         ],
         '👥 7. Store Staff & Legacy CRM': [
             'Users', 'Staff availabilities', 'Membership tiers', 'Customer memberships', 'Coupons'
@@ -563,6 +693,11 @@ def custom_get_app_list(request, app_label=None):
         ],
         '🏢 9. Legacy Entity Registry': [
             'Businesses', 'Brands', 'Stores', 'Service categories', 'Services'
+        ],
+        '💰 10. Revenue & Monetization': [
+            'Platform subscription plans', 'Store subscriptions', 'Platform invoices',
+            'Platform commission ledgers', 'Ad campaigns', 'Payment gateway revenues',
+            'Insurance partners', 'Marketplace products', 'Training courses',
         ],
     }
     new_app_list = []
@@ -680,3 +815,45 @@ class BankSettlementAccountAdmin(admin.ModelAdmin):
             'fields': ('is_verified', 'weekly_payout_enabled', 'activated_at', 'activated_by', 'rejection_reason')
         }),
     )
+class ProfessionalPortfolioInline(admin.TabularInline):
+    model = ProfessionalPortfolio
+    extra = 0
+class ProfessionalCertificationInline(admin.TabularInline):
+    model = ProfessionalCertification
+    extra = 0
+@admin.register(ProfessionalAccount)
+class ProfessionalAccountAdmin(admin.ModelAdmin):
+    list_display = ('name', 'user', 'phone_e164', 'years_experience', 'created_at')
+    search_fields = ('name', 'phone_e164', 'user__email')
+    inlines = [ProfessionalPortfolioInline, ProfessionalCertificationInline]
+@admin.register(PayoutDestination)
+class PayoutDestinationAdmin(admin.ModelAdmin):
+    list_display = ('professional_account', 'type', 'verification_status', 'is_active', 'created_at')
+    list_filter = ('type', 'verification_status', 'is_active')
+    search_fields = ('professional_account__name', 'vpa', 'holder_name')
+@admin.register(ProfessionalTip)
+class ProfessionalTipAdmin(admin.ModelAdmin):
+    list_display = ('professional_account', 'booking', 'amount_paise', 'method', 'status', 'initiated_at')
+    list_filter = ('method', 'status')
+    search_fields = ('professional_account__name',)
+    readonly_fields = ('id', 'initiated_at')
+class ReviewResponseInline(admin.StackedInline):
+    model = ReviewResponse
+    extra = 0
+@admin.register(ProfessionalReview)
+class ProfessionalReviewAdmin(admin.ModelAdmin):
+    list_display = ('store_group', 'professional_account', 'store_rating', 'professional_rating', 'moderation_status', 'created_at')
+    list_filter = ('moderation_status', 'store_rating')
+    search_fields = ('store_group__name', 'professional_account__name', 'comment')
+    inlines = [ReviewResponseInline]
+@admin.register(ReputationAggregate)
+class ReputationAggregateAdmin(admin.ModelAdmin):
+    list_display = ('professional_account', 'avg_rating', 'total_reviews', 'total_services', 'updated_at')
+    search_fields = ('professional_account__name',)
+    readonly_fields = ('id', 'professional_account', 'avg_rating', 'total_reviews', 'total_services', 'updated_at')
+    def has_add_permission(self, request):
+        return False
+@admin.register(ReputationConsent)
+class ReputationConsentAdmin(admin.ModelAdmin):
+    list_display = ('professional_account', 'portability_granted', 'updated_at')
+    search_fields = ('professional_account__name',)

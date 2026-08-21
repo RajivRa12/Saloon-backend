@@ -1,8 +1,13 @@
 from pathlib import Path
+import os
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-gcaz)x)()re4ubw+)qro1wx_ymnk%cx(&2=h2pbs$4y92v=qg^'
 DEBUG = True
 ALLOWED_HOSTS = ['*']
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', '')
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', '')
+MSG91_AUTH_KEY = os.environ.get('MSG91_AUTH_KEY', '')
+MSG91_OTP_TEMPLATE_ID = os.environ.get('MSG91_OTP_TEMPLATE_ID', '')
 INSTALLED_APPS = [
     'jazzmin',
     'django.contrib.admin',
@@ -20,6 +25,7 @@ INSTALLED_APPS = [
     'apps.store_erp',
     'apps.customers',
     'apps.staff',
+    'apps.therapist_app',
 ]
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -140,8 +146,15 @@ SIMPLE_JWT = {
     'JTI_CLAIM': 'jti',
 }
 CORS_ALLOW_ALL_ORIGINS = True
+from corsheaders.defaults import default_headers
+# X-Store-Id: Brand Owners send this to scope store_erp requests to the store
+# they've picked (see apps/store_erp/permissions.py).
+# X-Impersonation-Token: Master Admin support/ops sessions (see
+# apps/store_erp/permissions.py's check_impersonation_session).
+CORS_ALLOW_HEADERS = list(default_headers) + ['x-store-id', 'x-impersonation-token']
 import os
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 BOOKING_AUTO_ASSIGN_STRATEGY = 'fewest_bookings_today'
 BOOKING_OVERRIDE_TOKEN_MAX_AGE_SECONDS = 600
+SECURE_CROSS_ORIGIN_OPENER_POLICY = None

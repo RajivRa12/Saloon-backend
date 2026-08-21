@@ -6,21 +6,25 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from apps.core.models import (
     User, Appointment, AppointmentItem, Commission, AppointmentStatus,
-    CustomerNote, TherapistProfile, Announcement, TrainingVideo, Wallet,
+    CustomerNote, TherapistProfile, Announcement, TrainingVideo, TrainingCourse, Wallet,
     Notification, Attendance, AttendanceStatus, StaffTarget,
-    Review, StaffIncentive
+    Review, StaffIncentive, Conversation, ChatMessage, Payroll, LeaveRequest,
 )
 from .serializers import (
     TherapistProfileSerializer, TherapistAppointmentSerializer,
     TherapistCommissionSerializer, TherapistAppointmentItemSerializer,
-    CustomerNoteSerializer, AnnouncementSerializer, TrainingVideoSerializer,
+    CustomerNoteSerializer, AnnouncementSerializer, TrainingVideoSerializer, TrainingCourseSerializer,
     StaffWalletSerializer, NotificationSerializer, TipSerializer,
     StaffTaskSerializer, TherapistSettingsSerializer, StaffChatMessageSerializer,
-    TherapistReviewSerializer, StaffIncentiveSerializer
+    TherapistReviewSerializer, StaffIncentiveSerializer,
+    StaffPayrollSerializer, StaffLeaveRequestSerializer,
+    TherapistConversationSerializer, TherapistChatMessageSerializer,
 )
 from .permissions import IsTherapist
 def success_response(data, message="Success", status_code=200):
     return Response({"success": True, "message": message, "data": data}, status=status_code)
+def error_response(message="Error", status_code=400):
+    return Response({"success": False, "message": message, "data": None}, status=status_code)
 class TherapistProfileView(generics.RetrieveUpdateAPIView):
     serializer_class = TherapistProfileSerializer
     permission_classes = [IsAuthenticated, IsTherapist]
@@ -59,7 +63,7 @@ class TherapistAppointmentViewSet(viewsets.ModelViewSet):
         ).distinct()
     def _update_status(self, request, pk, new_status, allowed_from=None, msg="Updated."):
         from decimal import Decimal
-        from apps.core.models import Invoice, InvoiceItem
+        from apps.core.models import Invoice, InvoiceLine
         appointment = self.get_object()
         if allowed_from and appointment.status not in allowed_from:
             return Response(
@@ -77,24 +81,24 @@ class TherapistAppointmentViewSet(viewsets.ModelViewSet):
                     'store': appointment.store,
                     'customer': appointment.customer,
                     'invoice_number': f'INV-{appointment.id}',
-                    'subtotal': Decimal('0.00'),
-                    'tax_amount': Decimal('0.00'),
-                    'grand_total': Decimal('0.00'),
+                    'subtotal_paise': 0,
+                    'tax_amount_paise': 0,
+                    'grand_total_paise': 0,
                     'status': 'PAID',
                 }
             )
             subtotal = Decimal('0.00')
             for item in appointment.items.all():
                 price = item.price or (item.service.price if item.service else Decimal('0.00'))
-                inv_item, _ = InvoiceItem.objects.get_or_create(
+                inv_item, _ = InvoiceLine.objects.get_or_create(
                     invoice=invoice,
                     service=item.service,
                     defaults={
                         'quantity': 1,
-                        'price': price,
+                        'unit_price_paise': int(round(price * 100)),
                         'tax_rate': Decimal('0.00'),
-                        'tax_amount': Decimal('0.00'),
-                        'total': price,
+                        'tax_amount_paise': 0,
+                        'total_paise': int(round(price * 100)),
                     }
                 )
                 subtotal += price
@@ -110,8 +114,8 @@ class TherapistAppointmentViewSet(viewsets.ModelViewSet):
                             'is_paid_out': False,
                         }
                     )
-            invoice.subtotal = subtotal
-            invoice.grand_total = subtotal
+            invoice.subtotal_paise = int(round(subtotal * 100))
+            invoice.grand_total_paise = int(round(subtotal * 100))
             invoice.save()
         else:
             appointment.save()
@@ -185,8 +189,8 @@ class TherapistCommissionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TherapistCommissionSerializer
     permission_classes = [IsAuthenticated, IsTherapist]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
-    filterset_fields = ['is_paid']
-    ordering = ['-date']
+    filterset_fields = ['is_paid_out']
+    ordering = ['-created_at']
     def get_queryset(self):
         return Commission.objects.filter(therapist=self.request.user)
 class CustomerNoteViewSet(viewsets.ModelViewSet):
@@ -211,6 +215,11 @@ class TrainingVideoViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated, IsTherapist]
     def get_queryset(self):
         return TrainingVideo.objects.filter(is_active=True).order_by('-created_at')
+class TrainingCourseViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = TrainingCourseSerializer
+    permission_classes = [IsAuthenticated, IsTherapist]
+    def get_queryset(self):
+        return TrainingCourse.objects.filter(is_active=True)
 class TherapistWalletView(generics.RetrieveAPIView):
     serializer_class = StaffWalletSerializer
     permission_classes = [IsAuthenticated, IsTherapist]
@@ -269,6 +278,28 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
             therapist=self.request.user
         ).values_list('appointment__customer_id', flat=True).distinct()
         return User.objects.filter(id__in=customer_ids)
+class TherapistConversationViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = TherapistConversationSerializer
+    permission_classes = [IsAuthenticated, IsTherapist]
+    def get_queryset(self):
+        return Conversation.objects.filter(therapist=self.request.user)
+    @action(detail=True, methods=['get', 'post'])
+    def messages(self, request, pk=None):
+        convo = self.get_object()
+        if request.method == 'POST':
+            content = (request.data.get('content') or '').strip()
+            if not content:
+                return error_response("content is required.", 400)
+            msg = ChatMessage.objects.create(conversation=convo, sender=request.user, content=content)
+            from apps.core.notifications import notify_user
+            notify_user(
+                convo.customer, f"New message from {request.user.get_full_name() or 'your therapist'}",
+                content[:120], notif_type='NEW_MESSAGE', data={"conversation_id": str(convo.id)},
+            )
+            return success_response(TherapistChatMessageSerializer(msg, context={'request': request}).data, "Sent", 201)
+        convo.messages.exclude(sender=request.user).update(is_read=True)
+        msgs = convo.messages.select_related('sender')
+        return success_response(TherapistChatMessageSerializer(msgs, many=True, context={'request': request}).data)
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated, IsTherapist]
@@ -597,3 +628,20 @@ class StaffIncentiveViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['-created_at']
     def get_queryset(self):
         return StaffIncentive.objects.filter(staff=self.request.user)
+class StaffPayrollViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = StaffPayrollSerializer
+    permission_classes = [IsAuthenticated, IsTherapist]
+    filter_backends = [OrderingFilter]
+    ordering = ['-processed_at']
+    def get_queryset(self):
+        return Payroll.objects.filter(staff=self.request.user)
+class StaffLeaveRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = StaffLeaveRequestSerializer
+    permission_classes = [IsAuthenticated, IsTherapist]
+    http_method_names = ['get', 'post', 'head']
+    filter_backends = [OrderingFilter]
+    ordering = ['-start_date']
+    def get_queryset(self):
+        return LeaveRequest.objects.filter(staff=self.request.user)
+    def perform_create(self, serializer):
+        serializer.save(staff=self.request.user, store=self.request.user.store, outlet=self.request.user.outlet)

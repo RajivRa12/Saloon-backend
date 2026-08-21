@@ -33,7 +33,8 @@ from .views import (
     MembershipPlanViewSet, MembershipViewSet, PackagePlanViewSet, PackageViewSet,
     CampaignViewSet, Phase1FinancialReportsView, CommissionRuleViewSet,
     MeView, ChangePasswordView, StoreProfileView,
-    NotificationsView, GlobalSearchView
+    NotificationsView, GlobalSearchView, BrandStoresView,
+    AnnouncementViewSet, StoreConversationViewSet, QueueViewSet,
 )
 router = DefaultRouter()
 router.register(r'staff', StaffViewSet, basename='staff')
@@ -79,6 +80,9 @@ router.register(r'package-plans', PackagePlanViewSet, basename='package-plan')
 router.register(r'packages', PackageViewSet, basename='package')
 router.register(r'crm-campaigns', CampaignViewSet, basename='crm-campaign')
 router.register(r'commission-rules', CommissionRuleViewSet, basename='commission-rule')
+router.register(r'announcements', AnnouncementViewSet, basename='store-announcement')
+router.register(r'conversations', StoreConversationViewSet, basename='store-conversation')
+router.register(r'queue', QueueViewSet, basename='queue')
 urlpatterns = [
     path('', include(router.urls)),
     path('leaderboard/', LeaderboardView.as_view(), name='erp-leaderboard'),
@@ -88,6 +92,7 @@ urlpatterns = [
     path('store-services/', StoreServiceListView.as_view(), name='store-service-list'),
     path('customers/find-or-create/', CustomerLookupView.as_view(), name='customer-find-or-create'),
     path('me/', MeView.as_view(), name='erp-me'),
+    path('my-stores/', BrandStoresView.as_view(), name='erp-brand-stores'),
     path('me/change-password/', ChangePasswordView.as_view(), name='erp-change-password'),
     path('store-profile/', StoreProfileView.as_view(), name='erp-store-profile'),
     path('notifications/', NotificationsView.as_view(), name='erp-notifications'),

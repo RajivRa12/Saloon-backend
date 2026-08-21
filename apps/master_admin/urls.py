@@ -17,7 +17,10 @@ from .views import (
     AnalyticsView,
     GlobalUserViewSet,
     GlobalMembershipViewSet,
-    GlobalInvoiceViewSet
+    GlobalInvoiceViewSet,
+    PlatformSubscriptionPlanViewSet,
+    StoreSubscriptionViewSet,
+    PlatformInvoiceViewSet,
 )
 router = DefaultRouter()
 router.register(r'store-groups', StoreGroupViewSet, basename='store-group')
@@ -41,6 +44,9 @@ router.register(r'global-users', GlobalUserViewSet, basename='global-user')
 router.register(r'coupons', CouponViewSet, basename='coupon')
 router.register(r'global-memberships', GlobalMembershipViewSet, basename='global-membership')
 router.register(r'global-invoices', GlobalInvoiceViewSet, basename='global-invoice')
+router.register(r'subscription-plans', PlatformSubscriptionPlanViewSet, basename='subscription-plan')
+router.register(r'store-subscriptions', StoreSubscriptionViewSet, basename='store-subscription')
+router.register(r'platform-invoices', PlatformInvoiceViewSet, basename='platform-invoice')
 urlpatterns = [
     path('auth/login/', MasterAdminLoginView.as_view(), name='master_admin_login'),
     path('auth/logout/', MasterAdminLogoutView.as_view(), name='master_admin_logout'),

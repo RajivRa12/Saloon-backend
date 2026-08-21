@@ -3,6 +3,7 @@ import random
 import string
 import uuid
 import csv
+from decimal import Decimal
 from datetime import timedelta
 from django.utils import timezone
 from django.http import HttpResponse
@@ -28,7 +29,8 @@ from apps.core.models import (
     Plan, AccessCode,
     ServiceCategoryPhase1, CanonicalService, StoreService, StoreServiceMarketplaceStatus,
     GlobalCustomer, CustomerStatus, CustomerStoreLink, CustomerMergeLog,
-    ImpersonationSession, ImpersonationSessionMode
+    ImpersonationSession, ImpersonationSessionMode,
+    PlatformSubscriptionPlan, StoreSubscription, PlatformInvoice,
 )
 from .serializers import (
     BusinessSerializer, BrandSerializer, StoreSerializer,
@@ -39,7 +41,8 @@ from .serializers import (
     StoreGroupListSerializer, StoreGroupDetailSerializer, StoreGroupTransitionSerializer,
     KycDocumentSerializer, KycVerifySerializer, ServiceCategoryPhase1Serializer, CanonicalServiceSerializer, StoreServiceSerializer, StoreServiceReviewSerializer,
     GlobalCustomerSerializer, CustomerMergeSerializer, CustomerMergeLogSerializer,
-    AuditLogSerializer, ToggleFeatureFlagSerializer, ImpersonationSessionSerializer, ImpersonationStartSerializer
+    AuditLogSerializer, ToggleFeatureFlagSerializer, ImpersonationSessionSerializer, ImpersonationStartSerializer,
+    PlatformSubscriptionPlanSerializer, StoreSubscriptionSerializer, PlatformInvoiceSerializer,
 )
 from .permissions import IsMasterAdmin, BaseInternalUserPermission, IsSuperAdmin, IsOpsOrSuperAdmin, IsReviewerOrAbove
 User = get_user_model()
@@ -55,9 +58,9 @@ class DashboardView(generics.GenericAPIView):
         businesses = Business.objects.all()
         stores = Store.objects.all()
         users = User.objects.all()
-        total_revenue = Invoice.objects.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total'))['grand_total__sum'] or 0
+        total_revenue = Decimal(Invoice.objects.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         top_stores = stores.annotate(
-            revenue=Sum('invoices__grand_total', filter=models.Q(invoices__status=InvoiceStatus.PAID))
+            revenue=Sum('invoices__grand_total_paise', filter=models.Q(invoices__status=InvoiceStatus.PAID))
         ).order_by('-revenue')[:5]
         low_rated_stores = stores.annotate(
             avg_rating=Avg('reviews__rating')
@@ -136,6 +139,32 @@ class StoreViewSet(viewsets.ModelViewSet):
     filterset_fields = ['status', 'brand', 'business', 'currency', 'timezone']
     search_fields = ['name', 'email', 'contact_number', 'address']
     ordering_fields = ['name', 'created_at', 'status']
+    ordering = ['-created_at']
+class PlatformSubscriptionPlanViewSet(viewsets.ModelViewSet):
+    queryset = PlatformSubscriptionPlan.objects.all()
+    serializer_class = PlatformSubscriptionPlanSerializer
+    permission_classes = [IsAuthenticated, IsMasterAdmin]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['name']
+    ordering_fields = ['monthly_price', 'name', 'created_at']
+    ordering = ['monthly_price']
+class StoreSubscriptionViewSet(viewsets.ModelViewSet):
+    queryset = StoreSubscription.objects.select_related('store', 'plan').all()
+    serializer_class = StoreSubscriptionSerializer
+    permission_classes = [IsAuthenticated, IsMasterAdmin]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'plan']
+    search_fields = ['store__name']
+    ordering_fields = ['created_at', 'current_period_end']
+    ordering = ['-created_at']
+class PlatformInvoiceViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = PlatformInvoice.objects.select_related('store').all()
+    serializer_class = PlatformInvoiceSerializer
+    permission_classes = [IsAuthenticated, IsMasterAdmin]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'store']
+    search_fields = ['store__name']
+    ordering_fields = ['created_at', 'amount']
     ordering = ['-created_at']
 class PlatformUserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.select_related('brand', 'store').exclude(role=Role.CUSTOMER)
@@ -249,9 +278,9 @@ class AnalyticsView(generics.GenericAPIView):
         low_rated_stores = stores.annotate(
             avg_rating=Avg('reviews__rating')
         ).filter(avg_rating__isnull=False).order_by('avg_rating')[:10]
-        gmv_agg = Invoice.objects.filter(status=InvoiceStatus.PAID).aggregate(total=Sum('grand_total'))
-        gmv = gmv_agg['total'] or 0
-        rev_agg = BusinessSubscription.objects.filter(status='ACTIVE').aggregate(total=Sum('plan__price'))
+        gmv_agg = Invoice.objects.filter(status=InvoiceStatus.PAID).aggregate(total=Sum('grand_total_paise'))
+        gmv = Decimal(gmv_agg['total'] or 0) / 100
+        rev_agg = StoreSubscription.objects.filter(status='ACTIVE').aggregate(total=Sum('plan__monthly_price'))
         revenue = rev_agg['total'] or 0
         analytics = {
             "gmv": gmv,
@@ -334,7 +363,7 @@ class MasterAdminLoginView(generics.GenericAPIView):
                 )
             return Response(payload, status=status.HTTP_200_OK)
         clean_code = str(totp_code).strip()
-        if not totp.verify(clean_code, valid_windows=1):
+        if not totp.verify(clean_code, valid_window=1):
             AuditLog.objects.create(
                 actor_id=str(internal_user.id),
                 actor_type="internal_user",
@@ -1102,6 +1131,10 @@ class ImpersonationViewSet(viewsets.ReadOnlyModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         store = get_object_or_404(StoreGroup, pk=data['store_group_id'])
+        if not Store.objects.filter(outlet__store_group=store).exists():
+            return Response({
+                "error": {"code": "STORE_UNRESOLVABLE", "message": "This store group has no linked branch outlet the Store ERP can impersonate into."}
+            }, status=status.HTTP_400_BAD_REQUEST)
         internal_user = getattr(request, 'internal_user', None)
         user_role = getattr(internal_user, 'role', '')
         if data['mode'] == ImpersonationSessionMode.WRITE:

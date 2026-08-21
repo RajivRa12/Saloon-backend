@@ -17,7 +17,7 @@ from .serializers import (
     StaffAvailabilitySerializer, AppointmentSerializer,
     CreateAppointmentSerializer
 )
-from .permissions import IsStoreStaff, IsStoreManagerOrReceptionist
+from .permissions import IsStoreStaff, IsStoreManagerOrReceptionist, IsErpUser, IsBrandOwner, RequiresCRM, RequiresAnalytics
 def get_request_outlet(request):
     from apps.core.models import Outlet
     outlet_id = getattr(request, 'data', {}).get('outlet_id') or getattr(request, 'query_params', {}).get('outlet_id')
@@ -180,7 +180,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                         )
         return response
 from decimal import Decimal
-from apps.core.models import Invoice, InvoiceItem, Payment, Tip, PlatformSettings, InvoiceStatus, CommissionAccrual
+from apps.core.models import Invoice, InvoiceLine, Payment, Tip, PlatformSettings, InvoiceStatus, CommissionAccrual
 from .serializers import InvoiceSerializer, CheckoutPaymentSerializer, CreditNoteSerializer
 class InvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = InvoiceSerializer
@@ -228,31 +228,31 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         for item in appointment.items.all():
             line_tax = (item.price * tax_rate) / Decimal('100.00')
             line_total = item.price + line_tax
-            InvoiceItem.objects.create(
+            InvoiceLine.objects.create(
                 invoice=invoice,
                 service=item.service,
                 quantity=1,
-                price=item.price,
+                unit_price_paise=int(round(item.price * 100)),
                 tax_rate=tax_rate,
-                tax_amount=line_tax,
-                total=line_total
+                tax_amount_paise=int(round(line_tax * 100)),
+                total_paise=int(round(line_total * 100)),
             )
             subtotal += item.price
             tax_amount += line_tax
         discount_amount = Decimal(str(request.data.get('discount_amount', '0') or '0'))
         tip_amount = Decimal(str(request.data.get('tip_amount', '0') or '0'))
         payments_data = request.data.get('payments', [])
-        invoice.subtotal = subtotal
-        invoice.discount_amount = discount_amount
-        invoice.tax_amount = tax_amount
-        invoice.grand_total = max(Decimal('0.00'), subtotal - discount_amount + tax_amount)
+        invoice.subtotal_paise = int(round(subtotal * 100))
+        invoice.discount_amount_paise = int(round(discount_amount * 100))
+        invoice.tax_amount_paise = int(round(tax_amount * 100))
+        invoice.grand_total_paise = max(0, int(round((subtotal - discount_amount + tax_amount) * 100)))
         invoice.save()
         total_paid = Decimal('0.00')
         for p in payments_data:
             Payment.objects.create(
                 invoice=invoice,
                 method=p.get('method', 'CASH'),
-                amount=Decimal(str(p.get('amount', '0'))),
+                amount_paise=int(round(Decimal(str(p.get('amount', '0'))) * 100)),
                 transaction_reference=p.get('transaction_reference', '')
             )
             total_paid += Decimal(str(p.get('amount', '0')))
@@ -263,7 +263,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                 amount=tip_amount,
                 therapist=first_item.therapist if first_item else None
             )
-        if total_paid >= invoice.grand_total:
+        if int(round(total_paid * 100)) >= invoice.grand_total_paise:
             invoice.status = InvoiceStatus.PAID
             if invoice.appointment:
                 invoice.appointment.status = 'COMPLETED'
@@ -273,9 +273,15 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_digital(self, request, pk=None):
         invoice = self.get_object()
-        if not invoice.customer:
+        if invoice.customer:
+            destination = invoice.customer.email or invoice.customer.phone
+        elif invoice.global_customer:
+            destination = invoice.global_customer.email or invoice.global_customer.phone_e164
+        else:
             return error_response("Invoice has no associated customer to send to.", 400)
-        return success_response({}, f"Digital invoice successfully sent to {invoice.customer.email or invoice.customer.phone}")
+        if not destination:
+            return error_response("This customer has no email or phone on file to send to.", 400)
+        return success_response({}, f"Digital invoice successfully sent to {destination}")
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def pay(self, request, pk=None):
@@ -290,12 +296,12 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             Payment.objects.create(
                 invoice=invoice,
                 method=p_data['method'],
-                amount=p_data['amount'],
+                amount_paise=int(round(p_data['amount'] * 100)),
                 transaction_reference=p_data.get('transaction_reference', '')
             )
             total_payment += p_data['amount']
-        existing_payments_total = sum(p.amount for p in invoice.payments.all())
-        if existing_payments_total >= invoice.grand_total:
+        existing_payments_total_paise = sum(p.amount_paise for p in invoice.payments.all())
+        if existing_payments_total_paise >= invoice.grand_total_paise:
             invoice.status = InvoiceStatus.PAID
             invoice.save()
             if invoice.appointment:
@@ -345,7 +351,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             rule = find_commission_rule(locked_outlet.store_group, item.professional, CommissionAppliesTo.SERVICE, invoice.finalised_at.date())
             if not rule:
                 continue
-            base_paise = int(item.price * 100)
+            base_paise = item.unit_price_paise
             CommissionAccrual.objects.create(
                 invoice_line=item, professional=item.professional,
                 base_paise=base_paise, commission_paise=commission_paise_for_rule(rule, base_paise),
@@ -399,9 +405,10 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             nonlocal subtotal, tax_amount
             price = price_override if price_override is not None else (Decimal(store_service.default_price_paise) / Decimal('100'))
             line_tax = (price * tax_rate) / Decimal('100.00')
-            InvoiceItem.objects.create(
+            InvoiceLine.objects.create(
                 invoice=invoice, store_service=store_service, professional=professional,
-                quantity=1, price=price, tax_rate=tax_rate, tax_amount=line_tax, total=price + line_tax,
+                quantity=1, unit_price_paise=int(round(price * 100)), tax_rate=tax_rate,
+                tax_amount_paise=int(round(line_tax * 100)), total_paise=int(round((price + line_tax) * 100)),
             )
             subtotal += price
             tax_amount += line_tax
@@ -447,10 +454,10 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return error_response(
                 f"Discount of {discount_pct:.1f}% exceeds the {self.DISCOUNT_APPROVAL_THRESHOLD_PCT}% threshold and needs manager approval.", 400
             )
-        invoice.subtotal = subtotal
-        invoice.discount_amount = discount_amount
-        invoice.tax_amount = tax_amount
-        invoice.grand_total = max(Decimal('0.00'), subtotal - discount_amount + tax_amount)
+        invoice.subtotal_paise = int(round(subtotal * 100))
+        invoice.discount_amount_paise = int(round(discount_amount * 100))
+        invoice.tax_amount_paise = int(round(tax_amount * 100))
+        invoice.grand_total_paise = max(0, int(round((subtotal - discount_amount + tax_amount) * 100)))
         invoice.requires_manager_approval = requires_approval
         invoice.is_discount_approved = is_discount_approved
         invoice.save()
@@ -492,9 +499,9 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                     return error_response(f"Insufficient balance on gift card '{reference}'.", 400)
                 gift_card.current_balance -= amount
                 gift_card.save(update_fields=['current_balance'])
-            Payment.objects.create(invoice=invoice, method=method, amount=amount, transaction_reference=reference)
+            Payment.objects.create(invoice=invoice, method=method, amount_paise=int(round(amount * 100)), transaction_reference=reference)
             total_paid += amount
-        if invoice.grand_total <= 0 or total_paid >= invoice.grand_total:
+        if invoice.grand_total_paise <= 0 or int(round(total_paid * 100)) >= invoice.grand_total_paise:
             invoice.status = InvoiceStatus.PAID
         elif total_paid > 0:
             invoice.status = InvoiceStatus.PARTIALLY_PAID
@@ -645,8 +652,8 @@ class DashboardViewSet(viewsets.ViewSet):
         walk_in_count = today_appointments.filter(source='WALK_IN').count()
         cancelled_count = today_appointments.filter(status=AppointmentStatus.CANCELLED).count()
         today_invoices = Invoice.objects.filter(store=store, created_at__date=today)
-        revenue_today = today_invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total'))['grand_total__sum'] or Decimal('0.00')
-        pending_payments = today_invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(Sum('grand_total'))['grand_total__sum'] or Decimal('0.00')
+        revenue_today = Decimal(today_invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
+        pending_payments = Decimal(today_invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         today_tips = Tip.objects.filter(invoice__store=store, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
         staff_attendance = Attendance.objects.filter(store=store, date=today, status='PRESENT').count()
         now = timezone.now()
@@ -668,11 +675,11 @@ class DashboardViewSet(viewsets.ViewSet):
         revenue_graph = []
         for i in range(6, -1, -1):
             day = today - datetime.timedelta(days=i)
-            day_revenue = Invoice.objects.filter(
+            day_revenue = Decimal(Invoice.objects.filter(
                 store=store,
                 created_at__date=day,
                 status=InvoiceStatus.PAID
-            ).aggregate(Sum('grand_total'))['grand_total__sum'] or Decimal('0.00')
+            ).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
             revenue_graph.append({
                 "date": str(day),
                 "revenue": day_revenue
@@ -685,9 +692,9 @@ class DashboardViewSet(viewsets.ViewSet):
                 return 0.0
             return round(((current - previous) / previous) * 100, 1)
 
-        yesterday_revenue = Invoice.objects.filter(
+        yesterday_revenue = Decimal(Invoice.objects.filter(
             store=store, created_at__date=yesterday, status=InvoiceStatus.PAID
-        ).aggregate(Sum('grand_total'))['grand_total__sum'] or Decimal('0.00')
+        ).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         yesterday_appointments_count = Appointment.objects.filter(
             store=store, start_time__date=yesterday
         ).exclude(status=AppointmentStatus.CANCELLED).count()
@@ -814,7 +821,8 @@ class ERPGiftCardViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return GiftCard.objects.filter(store=self.request.user.store)
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        initial_value = serializer.validated_data.get('initial_value', 0)
+        serializer.save(store=self.request.user.store, current_balance=initial_value)
 class ERPServicePackageViewSet(viewsets.ModelViewSet):
     serializer_class = ERPServicePackageSerializer
     permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
@@ -895,11 +903,11 @@ class LeaderboardView(generics.GenericAPIView):
             })
         return success_response(data, "Leaderboard fetched")
 class FinancialReportView(generics.GenericAPIView):
-    permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
+    permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist, RequiresAnalytics]
     def get(self, request):
         store = request.user.store
-        revenue_agg = Invoice.objects.filter(store=store, status=InvoiceStatus.PAID).aggregate(total=Sum('grand_total'))
-        revenue = revenue_agg['total'] or 0
+        revenue_agg = Invoice.objects.filter(store=store, status=InvoiceStatus.PAID).aggregate(total=Sum('grand_total_paise'))
+        revenue = Decimal(revenue_agg['total'] or 0) / 100
         expense_agg = Expense.objects.filter(store=store).aggregate(total=Sum('amount'))
         expenses = expense_agg['total'] or 0
         payroll_agg = Payroll.objects.filter(store=store, status='PAID').aggregate(total=Sum('total_payout'))
@@ -907,8 +915,8 @@ class FinancialReportView(generics.GenericAPIView):
         total_expenses = expenses + payrolls
         profit = revenue - total_expenses
         tax_collected = float(revenue) * 0.18
-        cash_settlements = Payment.objects.filter(invoice__store=store, method='CASH').aggregate(total=Sum('amount'))['total'] or 0
-        card_settlements = Payment.objects.filter(invoice__store=store, method='CARD').aggregate(total=Sum('amount'))['total'] or 0
+        cash_settlements = Decimal(Payment.objects.filter(invoice__store=store, method='CASH').aggregate(total=Sum('amount_paise'))['total'] or 0) / 100
+        card_settlements = Decimal(Payment.objects.filter(invoice__store=store, method='CARD').aggregate(total=Sum('amount_paise'))['total'] or 0) / 100
         commissions = Commission.objects.filter(store=store, is_paid_out=False).aggregate(total=Sum('amount'))['total'] or 0
         data = {
             "profit_analysis": {
@@ -936,7 +944,7 @@ class ServiceProductViewSet(viewsets.ModelViewSet):
     serializer_class = ServiceProductSerializer
     permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
     def get_queryset(self):
-        return ServiceProduct.objects.filter(service__business=self.request.user.store.business)
+        return ServiceProduct.objects.filter(service__category__business=self.request.user.store.business)
 class StockTransferViewSet(viewsets.ModelViewSet):
     serializer_class = StockTransferSerializer
     permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
@@ -962,7 +970,7 @@ from django.db.models import Sum, Count, Avg
 from decimal import Decimal
 class CustomerCRMViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerCRMDataSerializer
-    permission_classes = [IsAuthenticated, IsStoreStaff]
+    permission_classes = [IsAuthenticated, IsStoreStaff, RequiresCRM]
     def get_queryset(self):
         store = self.request.user.store
         appointment_customer_ids = Appointment.objects.filter(store=store).values_list('customer_id', flat=True).distinct()
@@ -1014,11 +1022,11 @@ class CustomerCRMViewSet(viewsets.ModelViewSet):
         store = self.request.user.store
         invoices = Invoice.objects.filter(customer=user, store=store)
         total_visits = invoices.count()
-        total_spend = invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total'))['grand_total__sum'] or Decimal('0.00')
-        average_spend = invoices.filter(status=InvoiceStatus.PAID).aggregate(Avg('grand_total'))['grand_total__avg'] or Decimal('0.00')
-        outstanding_balance = invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(
-            unpaid=Sum('grand_total')
-        )['unpaid'] or Decimal('0.00')
+        total_spend = Decimal(invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
+        average_spend = Decimal(invoices.filter(status=InvoiceStatus.PAID).aggregate(Avg('grand_total_paise'))['grand_total_paise__avg'] or 0) / 100
+        outstanding_balance = Decimal(invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(
+            unpaid=Sum('grand_total_paise')
+        )['unpaid'] or 0) / 100
         user.total_visits = total_visits
         user.total_spend = total_spend
         user.average_spend = average_spend
@@ -1251,6 +1259,28 @@ class OutletAvailabilityView(APIView):
 from apps.core.models import Booking, AppointmentSlot, BookingStatus, AppointmentSlotStatus
 from .serializers import BookingSerializer, BookingCreateSerializer, ConfirmBookingSerializer, CancelBookingSerializer
 from .booking_engine import confirm_booking, reschedule_slot, BookingConflictError, BookingEngineError
+def _record_platform_commission(booking):
+    """Marketplace commission: on booking completion, charge the platform's
+    cut against the store's active PlatformSubscriptionPlan.commission_percent.
+    No-ops if the store has no legacy bridge, no subscription, or no plan —
+    commission only applies to stores actually on a paid/trial plan."""
+    from django.db.models import Sum
+    from apps.core.models import Store, PlatformCommissionLedger
+    store = Store.objects.filter(outlet=booking.outlet).first()
+    if not store or not hasattr(store, 'platform_subscription'):
+        return
+    subscription = store.platform_subscription
+    if not subscription.plan or subscription.status not in ('ACTIVE', 'FREE_TRIAL'):
+        return
+    gross = booking.slots.exclude(status=AppointmentSlotStatus.CANCELLED).aggregate(total=Sum('price_paise'))['total'] or 0
+    if gross <= 0:
+        return
+    percent = subscription.plan.commission_percent
+    commission_paise = int(gross * percent / 100)
+    PlatformCommissionLedger.objects.create(
+        store=store, booking=booking, gross_amount_paise=gross,
+        commission_percent_applied=percent, commission_paise=commission_paise,
+    )
 class BookingViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     http_method_names = ['get', 'post', 'head']
@@ -1305,6 +1335,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.save()
         booking.slots.exclude(status=AppointmentSlotStatus.CANCELLED).update(status=AppointmentSlotStatus.DONE)
         booking.refresh_from_db()
+        _record_platform_commission(booking)
         return success_response(BookingSerializer(booking).data, "Booking completed")
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
@@ -1564,7 +1595,7 @@ class CommissionRuleViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(store_group=self.request.user.outlet.store_group)
 class Phase1FinancialReportsView(APIView):
-    permission_classes = [IsAuthenticated, IsOutletStaff]
+    permission_classes = [IsAuthenticated, IsOutletStaff, RequiresAnalytics]
     REPORTS = ('revenue-by-professional', 'revenue-by-category', 'commission-payout', 'daily-register', 'gst')
     def get(self, request):
         from .reports import revenue_by_professional, revenue_by_category, commission_payout_report, daily_register_summary, gst_report
@@ -1621,7 +1652,7 @@ class GlobalSearchView(APIView):
             results.append({
                 "id": str(inv.id), "type": "invoice",
                 "title": inv.invoice_number or str(inv.id)[:8],
-                "subtitle": f"{customer_name} · ₹{inv.grand_total}",
+                "subtitle": f"{customer_name} · ₹{inv.grand_total_paise / 100:.2f}",
                 "link": f"/billing/{inv.id}",
             })
 
@@ -1645,6 +1676,28 @@ class NotificationsView(APIView):
         store = request.user.store
         items = []
 
+        if store and store.outlet_id:
+            from zoneinfo import ZoneInfo
+            ist = ZoneInfo("Asia/Kolkata")
+            recent_bookings = Booking.objects.filter(
+                outlet_id=store.outlet_id,
+                status__in=[BookingStatus.CONFIRMED, BookingStatus.IN_SERVICE, BookingStatus.COMPLETED],
+                created_at__gte=timezone.now() - datetime.timedelta(hours=48),
+            ).select_related('customer').prefetch_related('slots__store_service').order_by('-created_at')[:10]
+            for b in recent_bookings:
+                first_slot = b.slots.first()
+                service_name = first_slot.store_service.name if first_slot else "Booking"
+                customer_name = b.customer.name if b.customer else "Walk-in"
+                when = b.booking_start.astimezone(ist).strftime('%d %b, %I:%M %p')
+                items.append({
+                    "id": f"booking_{b.id}",
+                    "type": "new_booking",
+                    "title": f"New booking: {service_name}",
+                    "subtitle": f"{customer_name} · {when}",
+                    "link": "/calendar",
+                    "created_at": b.created_at.isoformat() if b.created_at else None,
+                })
+
         low_stock = Product.objects.filter(
             store=store, is_active=True, stock_quantity__lte=F('low_stock_warning')
         ).order_by('stock_quantity')[:10]
@@ -1667,7 +1720,7 @@ class NotificationsView(APIView):
                 "id": f"unpaid_invoice_{inv.id}",
                 "type": "unpaid_invoice",
                 "title": f"Invoice {inv.invoice_number or str(inv.id)[:8]} {inv.status.lower()}",
-                "subtitle": f"{customer_name} · ₹{inv.grand_total}",
+                "subtitle": f"{customer_name} · ₹{inv.grand_total_paise / 100:.2f}",
                 "link": f"/billing/{inv.id}",
                 "created_at": inv.created_at.isoformat() if inv.created_at else None,
             })
@@ -1689,7 +1742,7 @@ class NotificationsView(APIView):
         return success_response({"count": len(items), "items": items})
 from .serializers import MeSerializer, StoreProfileSerializer
 class MeView(APIView):
-    permission_classes = [IsAuthenticated, IsStoreStaff]
+    permission_classes = [IsAuthenticated, IsErpUser]
     def get(self, request):
         return success_response(MeSerializer(request.user).data)
     def patch(self, request):
@@ -1697,8 +1750,24 @@ class MeView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return success_response(serializer.data, "Profile updated")
+class BrandStoresView(APIView):
+    """Lets a Brand Owner list every store under their brand, before they've
+    picked one to work in (so it can't depend on IsStoreStaff's store_id check)."""
+    permission_classes = [IsAuthenticated, IsBrandOwner]
+    def get(self, request):
+        from apps.core.models import Store
+        stores = Store.objects.filter(brand_id=request.user.brand_id).order_by('name')
+        return success_response([
+            {
+                "id": s.id,
+                "name": s.name,
+                "status": s.status,
+                "address": s.address,
+            }
+            for s in stores
+        ])
 class ChangePasswordView(APIView):
-    permission_classes = [IsAuthenticated, IsStoreStaff]
+    permission_classes = [IsAuthenticated, IsErpUser]
     def post(self, request):
         old_password = request.data.get('old_password')
         new_password = request.data.get('new_password')
@@ -1724,3 +1793,87 @@ class StoreProfileView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return success_response(serializer.data, "Store profile updated")
+from apps.core.models import Announcement, Conversation, ChatMessage
+from .serializers import AnnouncementSerializer, StoreConversationSerializer, StoreChatMessageSerializer
+class AnnouncementViewSet(viewsets.ModelViewSet):
+    serializer_class = AnnouncementSerializer
+    permission_classes = [IsStoreManagerOrReceptionist]
+    def get_queryset(self):
+        return Announcement.objects.filter(store=self.request.user.store).order_by('-created_at')
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store)
+class StoreConversationViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = StoreConversationSerializer
+    permission_classes = [IsStoreManagerOrReceptionist]
+    def get_queryset(self):
+        return Conversation.objects.filter(therapist__store=self.request.user.store).select_related('customer', 'therapist')
+    @action(detail=True, methods=['get', 'post'])
+    def messages(self, request, pk=None):
+        convo = self.get_object()
+        if request.method == 'POST':
+            content = (request.data.get('content') or '').strip()
+            if not content:
+                return error_response("content is required.", 400)
+            msg = ChatMessage.objects.create(conversation=convo, sender=request.user, content=content)
+            from apps.core.notifications import notify_user
+            notify_user(
+                convo.customer, f"New message from {request.user.get_full_name() or 'the store'}",
+                content[:120], notif_type='NEW_MESSAGE', data={"conversation_id": str(convo.id)},
+            )
+            return success_response(StoreChatMessageSerializer(msg, context={'request': request}).data, "Sent", 201)
+        convo.messages.exclude(sender=request.user).update(is_read=True)
+        msgs = convo.messages.select_related('sender')
+        return success_response(StoreChatMessageSerializer(msgs, many=True, context={'request': request}).data)
+from apps.core.models import QueueEntry, QueueEntryStatus, DEFAULT_QUEUE_WAIT_MINUTES
+from .serializers import QueueEntrySerializer
+class QueueViewSet(viewsets.ModelViewSet):
+    """Reception's 'who's here right now' board — a walk-in checks in, waits
+    their turn, gets called. Outlet-scoped, like the rest of the booking
+    engine, and distinct from the future-date Waitlist model."""
+    serializer_class = QueueEntrySerializer
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    ACTIVE_STATUSES = [QueueEntryStatus.WAITING, QueueEntryStatus.CALLED, QueueEntryStatus.IN_SERVICE]
+    def get_queryset(self):
+        qs = QueueEntry.objects.filter(outlet_id=self.request.user.outlet_id).select_related(
+            'customer', 'store_service', 'professional'
+        )
+        if self.action == 'list':
+            qs = qs.filter(status__in=self.ACTIVE_STATUSES)
+        return qs
+    def _position_and_wait_context(self, entries):
+        waiting = [e for e in entries if e.status == QueueEntryStatus.WAITING]
+        waiting.sort(key=lambda e: e.checked_in_at)
+        positions, waits, running_total = {}, {}, 0
+        for i, e in enumerate(waiting):
+            positions[e.id] = i + 1
+            waits[e.id] = running_total
+            running_total += (e.store_service.duration_min if e.store_service else DEFAULT_QUEUE_WAIT_MINUTES)
+        return {'positions': positions, 'waits': waits}
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.action == 'list':
+            context.update(self._position_and_wait_context(list(self.get_queryset())))
+        return context
+    def perform_create(self, serializer):
+        serializer.save(outlet_id=self.request.user.outlet_id)
+    def _transition(self, request, pk, new_status, timestamp_field):
+        entry = self.get_object()
+        entry.status = new_status
+        setattr(entry, timestamp_field, timezone.now())
+        entry.save(update_fields=['status', timestamp_field])
+        return success_response(QueueEntrySerializer(entry).data, f"Marked {new_status}")
+    @action(detail=True, methods=['post'])
+    def call(self, request, pk=None):
+        return self._transition(request, pk, QueueEntryStatus.CALLED, 'called_at')
+    @action(detail=True, methods=['post'])
+    def start(self, request, pk=None):
+        return self._transition(request, pk, QueueEntryStatus.IN_SERVICE, 'started_at')
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        return self._transition(request, pk, QueueEntryStatus.COMPLETED, 'completed_at')
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        return self._transition(request, pk, QueueEntryStatus.CANCELLED, 'completed_at')
+    @action(detail=True, methods=['post'], url_path='no-show')
+    def no_show(self, request, pk=None):
+        return self._transition(request, pk, QueueEntryStatus.NO_SHOW, 'completed_at')

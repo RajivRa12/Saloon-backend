@@ -1,11 +1,35 @@
 from rest_framework import serializers
 from apps.core.models import (
     User, Appointment, AppointmentItem, Commission,
-    CustomerNote, TherapistProfile, Announcement, TrainingVideo,
+    CustomerNote, TherapistProfile, Announcement, TrainingVideo, TrainingCourse,
     Tip, Wallet, WalletTransaction, Notification,
     StaffTask, TherapistSettings, StaffChatMessage,
-    Review, StaffIncentive
+    Review, StaffIncentive, Conversation, ChatMessage, Payroll, LeaveRequest,
 )
+class TherapistChatMessageSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
+    is_mine = serializers.SerializerMethodField()
+    class Meta:
+        model = ChatMessage
+        fields = ['id', 'sender', 'sender_name', 'content', 'is_read', 'created_at', 'is_mine']
+    def get_is_mine(self, obj):
+        request = self.context.get('request')
+        return bool(request and obj.sender_id == request.user.id)
+class TherapistConversationSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+    class Meta:
+        model = Conversation
+        fields = ['id', 'customer', 'customer_name', 'last_message', 'unread_count', 'created_at']
+    def get_last_message(self, obj):
+        m = obj.messages.order_by('-created_at').first()
+        return {'content': m.content, 'created_at': m.created_at} if m else None
+    def get_unread_count(self, obj):
+        request = self.context.get('request')
+        if not request:
+            return 0
+        return obj.messages.exclude(sender=request.user).filter(is_read=False).count()
 class TherapistPortfolioSerializer(serializers.ModelSerializer):
     class Meta:
         model = TherapistProfile
@@ -73,6 +97,13 @@ class TrainingVideoSerializer(serializers.ModelSerializer):
     class Meta:
         model = TrainingVideo
         fields = ['id', 'title', 'description', 'video_url', 'category', 'created_at']
+class TrainingCourseSerializer(serializers.ModelSerializer):
+    price = serializers.SerializerMethodField()
+    class Meta:
+        model = TrainingCourse
+        fields = ['id', 'title', 'description', 'instructor_name', 'category', 'duration_hours', 'price', 'created_at']
+    def get_price(self, obj):
+        return obj.price_paise / 100
 class StaffTipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tip
@@ -129,3 +160,13 @@ class StaffIncentiveSerializer(serializers.ModelSerializer):
         model = StaffIncentive
         fields = ['id', 'title', 'amount', 'is_paid_out', 'created_at']
         read_only_fields = ['id', 'title', 'amount', 'is_paid_out', 'created_at']
+class StaffPayrollSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payroll
+        fields = ['id', 'month_year', 'base_salary', 'commissions_earned', 'incentives', 'deductions', 'total_payout', 'status', 'processed_at']
+        read_only_fields = fields
+class StaffLeaveRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LeaveRequest
+        fields = ['id', 'start_date', 'end_date', 'reason', 'status']
+        read_only_fields = ['id', 'status']

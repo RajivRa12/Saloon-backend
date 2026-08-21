@@ -5,7 +5,7 @@ from django.utils import timezone
 from apps.core.models import (
     Professional, ProfessionalShift, ProfessionalTimeOff, ProfessionalLinkStatus,
     AppointmentSlot, AppointmentSlotStatus, Resource, StoreServiceOutletOverride,
-    ResourceType,
+    ResourceType, SlotHold, SlotHoldStatus,
 )
 SLOT_GRANULARITY_MINUTES = 15
 AVAILABILITY_CACHE_TTL_SECONDS = 30
@@ -69,7 +69,11 @@ def _subtract_interval(windows, busy_start, busy_end):
         if busy_end < end:
             result.append((busy_end, end))
     return result
-def _professional_busy_intervals(professional, day_start, day_end, buffer_after):
+def _professional_busy_intervals(professional, day_start, day_end):
+    """A room reserves duration + buffer_after (cleanup) — see resource_free
+    and its buffer-padded callers. A professional is only locked for the
+    exact appointment duration; buffers are a room-cleanup concern, not a
+    professional-availability one."""
     intervals = []
     for t in ProfessionalTimeOff.objects.filter(
         professional=professional, start_at__lt=day_end, end_at__gt=day_start
@@ -80,7 +84,12 @@ def _professional_busy_intervals(professional, day_start, day_end, buffer_after)
         status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
         slot_start__lt=day_end, slot_end__gt=day_start,
     ):
-        intervals.append((s.slot_start, s.slot_end + dt.timedelta(minutes=buffer_after)))
+        intervals.append((s.slot_start, s.slot_end))
+    for h in SlotHold.objects.filter(
+        professional=professional, status=SlotHoldStatus.HELD, expires_at__gt=timezone.now(),
+        slot_start__lt=day_end, slot_end__gt=day_start,
+    ):
+        intervals.append((h.slot_start, h.slot_end))
     return intervals
 def free_windows_for_professional(professional, outlet, the_date, duration_min, buffer_before, buffer_after):
     windows = _shift_windows(professional, outlet, the_date)
@@ -88,10 +97,9 @@ def free_windows_for_professional(professional, outlet, the_date, duration_min, 
         return []
     day_start = min(w[0] for w in windows)
     day_end = max(w[1] for w in windows)
-    for busy_start, busy_end in _professional_busy_intervals(professional, day_start, day_end, buffer_after):
+    for busy_start, busy_end in _professional_busy_intervals(professional, day_start, day_end):
         windows = _subtract_interval(windows, busy_start, busy_end)
-    needed_minutes = buffer_before + duration_min + buffer_after
-    return [(s, e) for s, e in windows if (e - s).total_seconds() / 60 >= needed_minutes]
+    return [(s, e) for s, e in windows if (e - s).total_seconds() / 60 >= duration_min]
 def resource_free(outlet, resource_type, start, end):
     resources = Resource.objects.filter(outlet=outlet, resource_type=resource_type, is_bookable=True)
     if not resources.exists():
@@ -100,6 +108,12 @@ def resource_free(outlet, resource_type, start, end):
         AppointmentSlot.objects.filter(
             resource__in=resources,
             status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
+            slot_start__lt=end, slot_end__gt=start,
+        ).values_list('resource_id', flat=True)
+    )
+    busy_resource_ids |= set(
+        SlotHold.objects.filter(
+            resource__in=resources, status=SlotHoldStatus.HELD, expires_at__gt=timezone.now(),
             slot_start__lt=end, slot_end__gt=start,
         ).values_list('resource_id', flat=True)
     )

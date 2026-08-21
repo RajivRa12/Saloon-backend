@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/erp/', include('apps.store_erp.urls')),
     path('api/customer/', include('apps.customers.urls')),
     path('api/staff/', include('apps.staff.urls')),
+    path('api/therapist/', include('apps.therapist_app.urls')),
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

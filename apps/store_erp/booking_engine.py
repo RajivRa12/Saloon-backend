@@ -62,12 +62,10 @@ AUTO_ASSIGN_STRATEGIES = {
 }
 def auto_assign_professional(outlet, store_service, the_date, slot_start, slot_end):
     duration_min, buffer_before, buffer_after, skill_tag, resource_type = service_duration_and_buffers(store_service, outlet)
-    needed_start = slot_start - dt.timedelta(minutes=buffer_before)
-    needed_end = slot_end + dt.timedelta(minutes=buffer_after)
     candidates = [
         professional for professional in eligible_professionals(outlet, skill_tag)
         if any(
-            w_start <= needed_start and needed_end <= w_end
+            w_start <= slot_start and slot_end <= w_end
             for w_start, w_end in free_windows_for_professional(professional, outlet, the_date, duration_min, buffer_before, buffer_after)
         )
     ]
@@ -133,7 +131,7 @@ def confirm_booking(booking, slot_requests, actor=None, override_token=None, ove
         professional = _resolve_professional(booking, req, store_service, the_date, slot_start, slot_end)
         prof_conflict = AppointmentSlot.objects.filter(
             professional=professional, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
-            slot_start__lt=slot_end + dt.timedelta(minutes=buffer_after), slot_end__gt=slot_start - dt.timedelta(minutes=buffer_before),
+            slot_start__lt=slot_end, slot_end__gt=slot_start,
         ).exclude(booking=booking).exists()
         resource, resource_conflict = (None, False)
         if resource_type != ResourceType.NONE:
@@ -182,7 +180,7 @@ def reschedule_slot(old_slot, new_start, new_professional_id=None, actor=None, o
     professional = _resolve_professional(booking, req, store_service, the_date, new_start, new_end)
     prof_conflict = AppointmentSlot.objects.filter(
         professional=professional, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
-        slot_start__lt=new_end + dt.timedelta(minutes=buffer_after), slot_end__gt=new_start - dt.timedelta(minutes=buffer_before),
+        slot_start__lt=new_end, slot_end__gt=new_start,
     ).exclude(id=old_slot.id).exists()
     resource, resource_conflict = (None, False)
     if resource_type != ResourceType.NONE:

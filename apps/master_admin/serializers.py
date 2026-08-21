@@ -4,8 +4,26 @@ from apps.core.models import (
     PlatformSettings, Coupon, MembershipTier, Invoice, StoreGroup, Outlet, StoreStatusHistory, KycDocument, BankSettlementAccount,
     Plan, AccessCode, ServiceCategoryPhase1, CanonicalService, StoreService, StoreServiceMarketplaceStatus,
     GlobalCustomer, CustomerStoreLink, CustomerMergeLog, AuditLog,
-    ImpersonationSession, ImpersonationSessionMode
+    ImpersonationSession, ImpersonationSessionMode,
+    PlatformSubscriptionPlan, StoreSubscription, PlatformInvoice,
 )
+class PlatformSubscriptionPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformSubscriptionPlan
+        fields = '__all__'
+class StoreSubscriptionSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source='store.name', read_only=True)
+    plan_name = serializers.CharField(source='plan.name', read_only=True)
+    plan_monthly_price = serializers.DecimalField(source='plan.monthly_price', read_only=True, max_digits=10, decimal_places=2)
+    class Meta:
+        model = StoreSubscription
+        fields = '__all__'
+class PlatformInvoiceSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source='store.name', read_only=True)
+    class Meta:
+        model = PlatformInvoice
+        fields = '__all__'
+        read_only_fields = ['store', 'stripe_invoice_id', 'created_at']
 class BusinessSerializer(serializers.ModelSerializer):
     class Meta:
         model = Business

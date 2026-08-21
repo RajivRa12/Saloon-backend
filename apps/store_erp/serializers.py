@@ -2,7 +2,7 @@ from rest_framework import serializers
 import re
 from apps.core.models import (
     ServiceCategory, Service, StaffAvailability,
-    Appointment, AppointmentItem, User, Invoice, InvoiceItem, Payment, Tip,
+    Appointment, AppointmentItem, User, Invoice, InvoiceLine, Payment, Tip,
     MembershipTier, CustomerMembership,
     Vendor, Product, PurchaseOrder, PurchaseOrderItem,
     Expense, Commission, GiftCard, ServicePackage, CustomerPackage,
@@ -99,8 +99,8 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
     service_name = serializers.SerializerMethodField()
     professional_name = serializers.CharField(source='professional.display_name', read_only=True)
     class Meta:
-        model = InvoiceItem
-        fields = ['id', 'service', 'store_service', 'service_name', 'professional', 'professional_name', 'quantity', 'price', 'tax_rate', 'tax_amount', 'total']
+        model = InvoiceLine
+        fields = ['id', 'service', 'store_service', 'service_name', 'professional', 'professional_name', 'quantity', 'line_type', 'unit_price_paise', 'tax_rate', 'tax_amount_paise', 'total_paise']
     def get_service_name(self, obj):
         if obj.store_service_id:
             return obj.store_service.name
@@ -110,7 +110,7 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
-        fields = ['id', 'method', 'amount', 'transaction_reference', 'created_at']
+        fields = ['id', 'method', 'amount_paise', 'transaction_reference', 'created_at']
 class TipSerializer(serializers.ModelSerializer):
     therapist_name = serializers.CharField(source='therapist.get_full_name', read_only=True)
     class Meta:
@@ -133,7 +133,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'invoice_number', 'store', 'outlet', 'appointment', 'booking',
             'customer', 'customer_details', 'global_customer', 'global_customer_name',
-            'subtotal', 'discount_amount', 'tax_amount', 'grand_total', 'status',
+            'subtotal_paise', 'discount_amount_paise', 'tax_amount_paise', 'grand_total_paise', 'status',
             'requires_manager_approval', 'is_discount_approved',
             'finalised_at', 'created_by',
             'created_at', 'updated_at', 'items', 'payments', 'tips', 'credit_notes'
@@ -260,10 +260,13 @@ class StaffDocumentSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['staff']
 class StaffTargetSerializer(serializers.ModelSerializer):
+    staff_name = serializers.SerializerMethodField()
     class Meta:
         model = StaffTarget
         fields = '__all__'
-        read_only_fields = ['store', 'staff']
+        read_only_fields = ['store']
+    def get_staff_name(self, obj):
+        return obj.staff.get_full_name() or obj.staff.email
 class PayrollSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.get_full_name', read_only=True)
     class Meta:
@@ -302,6 +305,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['user']
 class CustomerCRMDataSerializer(serializers.ModelSerializer):
+    customer_code = serializers.SerializerMethodField()
     crm_profile = CustomerProfileSerializer(read_only=True)
     loyalty_points = serializers.IntegerField(read_only=True)
     total_visits = serializers.IntegerField(read_only=True, default=0)
@@ -330,10 +334,12 @@ class CustomerCRMDataSerializer(serializers.ModelSerializer):
                 "is_frozen": cm.is_frozen
             }
         return None
+    def get_customer_code(self, obj):
+        return f"CUST-{obj.id:06d}"
     class Meta:
         model = User
         fields = [
-            'id', 'first_name', 'last_name', 'email', 'phone',
+            'id', 'customer_code', 'first_name', 'last_name', 'email', 'phone',
             'loyalty_points', 'crm_profile',
             'total_visits', 'total_spend', 'average_spend',
             'outstanding_balance', 'favorite_therapist_name',
@@ -427,18 +433,32 @@ class BookingSerializer(serializers.ModelSerializer):
     slots = AppointmentSlotSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     booked_by_name = serializers.SerializerMethodField()
+    payment = serializers.SerializerMethodField()
     class Meta:
         model = Booking
         fields = [
-            'id', 'outlet', 'customer', 'customer_name', 'source', 'status',
+            'id', 'booking_code', 'outlet', 'customer', 'customer_name', 'source', 'status',
             'booked_by', 'booked_by_name', 'booking_start', 'booking_end', 'notes',
-            'created_at', 'cancelled_at', 'cancellation_reason', 'slots'
+            'created_at', 'cancelled_at', 'cancellation_reason', 'slots', 'payment',
         ]
         read_only_fields = ['status', 'booked_by', 'created_at', 'cancelled_at', 'cancellation_reason']
     def get_booked_by_name(self, obj):
         if obj.booked_by:
             return obj.booked_by.get_full_name() or obj.booked_by.email
         return None
+    def get_payment(self, obj):
+        # Staff need to know how much is still owed at check-in when a
+        # customer paid a deposit online rather than the full amount.
+        payment = getattr(obj, 'online_payment', None)
+        if not payment:
+            return None
+        return {
+            "payment_type": payment.payment_type,
+            "status": payment.status,
+            "amount_paise": payment.amount_paise,
+            "total_amount_paise": payment.total_amount_paise,
+            "balance_due_paise": payment.total_amount_paise - payment.amount_paise,
+        }
 class BookingCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
@@ -559,14 +579,67 @@ class MeSerializer(serializers.ModelSerializer):
     outlet_name = serializers.CharField(source='outlet.name', read_only=True, default=None)
     class Meta:
         model = User
-        fields = ['id', 'email', 'first_name', 'last_name', 'phone', 'role', 'store_name', 'outlet_name', 'date_joined']
-        read_only_fields = ['id', 'email', 'role', 'store_name', 'outlet_name', 'date_joined']
+        fields = ['id', 'email', 'first_name', 'last_name', 'phone', 'role', 'brand_id', 'store_id', 'outlet_id', 'store_name', 'outlet_name', 'date_joined']
+        read_only_fields = ['id', 'email', 'role', 'brand_id', 'store_id', 'outlet_id', 'store_name', 'outlet_name', 'date_joined']
 from apps.core.models import Store
 class StoreProfileSerializer(serializers.ModelSerializer):
+    store_code = serializers.SerializerMethodField()
+    def get_store_code(self, obj):
+        return obj.outlet.invoice_prefix if obj.outlet else None
     class Meta:
         model = Store
         fields = [
-            'id', 'name', 'address', 'location', 'working_hours', 'currency', 'timezone',
+            'id', 'store_code', 'name', 'address', 'location', 'working_hours', 'currency', 'timezone',
             'gst_number', 'contact_number', 'email', 'status', 'is_premium_listing',
         ]
         read_only_fields = ['id', 'status', 'is_premium_listing']
+from apps.core.models import Announcement, Conversation, ChatMessage
+class AnnouncementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Announcement
+        fields = '__all__'
+        read_only_fields = ['store']
+class StoreChatMessageSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
+    is_mine = serializers.SerializerMethodField()
+    class Meta:
+        model = ChatMessage
+        fields = ['id', 'sender', 'sender_name', 'content', 'is_read', 'created_at', 'is_mine']
+    def get_is_mine(self, obj):
+        request = self.context.get('request')
+        return bool(request and obj.sender_id == request.user.id)
+class StoreConversationSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
+    therapist_name = serializers.CharField(source='therapist.get_full_name', read_only=True)
+    last_message = serializers.SerializerMethodField()
+    class Meta:
+        model = Conversation
+        fields = ['id', 'customer_name', 'therapist_name', 'last_message', 'created_at']
+    def get_last_message(self, obj):
+        m = obj.messages.order_by('-created_at').first()
+        return {'content': m.content, 'created_at': m.created_at} if m else None
+from apps.core.models import QueueEntry
+class QueueEntrySerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+    service_name = serializers.CharField(source='store_service.name', read_only=True)
+    professional_name = serializers.CharField(source='professional.display_name', read_only=True)
+    position = serializers.SerializerMethodField()
+    estimated_wait_minutes = serializers.SerializerMethodField()
+    class Meta:
+        model = QueueEntry
+        fields = [
+            'id', 'customer', 'guest_name', 'guest_phone', 'name', 'phone',
+            'store_service', 'service_name', 'professional', 'professional_name',
+            'notes', 'status', 'checked_in_at', 'called_at', 'started_at', 'completed_at',
+            'position', 'estimated_wait_minutes',
+        ]
+        read_only_fields = ['id', 'status', 'checked_in_at', 'called_at', 'started_at', 'completed_at']
+    def get_name(self, obj):
+        return obj.guest_name or (obj.customer.name if obj.customer else None)
+    def get_phone(self, obj):
+        return obj.guest_phone or (obj.customer.phone_e164 if obj.customer else None)
+    def get_position(self, obj):
+        return self.context.get('positions', {}).get(obj.id)
+    def get_estimated_wait_minutes(self, obj):
+        return self.context.get('waits', {}).get(obj.id)
