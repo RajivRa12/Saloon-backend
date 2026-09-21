@@ -408,6 +408,18 @@ class Command(BaseCommand):
             name="NearbyMe Partner Studio (POS Branch)",
             defaults={"contact_number": "+919800000000", "email": "studio.pos@nearbyme.in", "address": "Indiranagar 100ft Road"}
         )
+        Store.objects.get_or_create(
+            brand=demo_brand,
+            business=demo_business,
+            name="Green Trends Unisex Styling",
+            defaults={"contact_number": "+919845012345", "email": "rajeshwari@greentrends.in", "address": "45 Indiranagar"}
+        )
+        Store.objects.get_or_create(
+            brand=demo_brand,
+            business=demo_business,
+            name="Bodycraft Luxury Spa",
+            defaults={"contact_number": "+919845123456", "email": "m.nanda@bodycraft.co.in", "address": "Lavelle Road"}
+        )
 
         from apps.core.models import ServiceCategory, Service
         cat_hair, _ = ServiceCategory.objects.get_or_create(business=demo_business, name="Hair & Styling")
