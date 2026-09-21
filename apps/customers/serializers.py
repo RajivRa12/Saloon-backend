@@ -36,9 +36,11 @@ class PublicStoreSerializer(serializers.ModelSerializer):
     has_online_booking = serializers.SerializerMethodField()
     is_premium_listing = serializers.SerializerMethodField()
     slug = serializers.SerializerMethodField()
+    avg_rating = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
     class Meta:
         model = Store
-        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email', 'has_online_booking', 'working_hours', 'is_premium_listing', 'slug']
+        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email', 'has_online_booking', 'working_hours', 'is_premium_listing', 'slug', 'avg_rating', 'review_count']
     def get_has_online_booking(self, obj):
         return obj.outlet_id is not None
     def get_slug(self, obj):
@@ -49,6 +51,13 @@ class PublicStoreSerializer(serializers.ModelSerializer):
         # when an active subscription actually bundles it in. See
         # Store.has_plan_feature.
         return bool(obj.is_premium_listing) and obj.has_plan_feature('includes_premium_listing')
+    def get_avg_rating(self, obj):
+        from django.db.models import Avg
+        result = Review.objects.filter(store=obj).aggregate(avg=Avg('rating'))
+        avg = result.get('avg')
+        return round(float(avg), 1) if avg is not None else None
+    def get_review_count(self, obj):
+        return Review.objects.filter(store=obj).count()
 class PublicServiceSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     store_id = serializers.SerializerMethodField()

@@ -102,7 +102,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("✔ Seeded 3 Internal Executive Users + 'admin' superuser with admin portal access."))
         # --- ADDED: Dummy Store Admin User ---
         manager_user, _ = User.objects.get_or_create(
-            username="manager@nearbyme.com",
+            email="manager@nearbyme.com",
             defaults={
                 "email": "manager@nearbyme.com",
                 "first_name": "Store",
@@ -213,6 +213,13 @@ class Command(BaseCommand):
             StoreGroupStatus.SUSPENDED, StoreGroupStatus.DORMANT, StoreGroupStatus.OFFBOARDED
         ]
         salon_businesses = [
+            # =========================================================================
+            # 🛑 ADD YOUR REAL SALON DETAILS HERE BEFORE PUSHING TO COOLIFY 🛑
+            # Format: ("Salon Name", "Legal Name", "Owner Name", "Phone", "Email", "GSTIN", "PAN", StoreGroupType, "City", "Zone", "Pincode")
+            # =========================================================================
+            ("YOUR REAL SALON NAME", "YOUR LEGAL BUSINESS NAME", "Rajiv Palla", "+919800000000", "your.email@example.com", "YOUR_GSTIN", "YOUR_PAN", StoreGroupType.SALON, "Bengaluru", "Indiranagar", "560038"),
+            # =========================================================================
+
             ("Green Trends Unisex Styling", "Green Trends Wellness Private Limited", "Rajeshwari Subramanian", "+919845012345", "rajeshwari@greentrends.in", "29AABCD1234E1Z5", "AABCD1234E", StoreGroupType.SALON, "Bengaluru", "Indiranagar", "560038"),
             ("Bodycraft Luxury Wellness & Spa", "Bodycraft Healthcare & Aesthetics Pvt Ltd", "Manika Nanda", "+919845123456", "m.nanda@bodycraft.co.in", "29AABFB5678G1Z2", "AABFB5678G", StoreGroupType.BOTH, "Bengaluru", "Lavelle Road", "560001"),
             ("Toni & Guy Hair Academy & Lounge", "Toni and Guy South India Retail Pvt Ltd", "Bhavin Karia", "+919845234567", "bhavin@toniandguy.in", "29AACFT9012H1Z8", "AACFT9012H", StoreGroupType.SALON, "Bengaluru", "Koramangala", "560034"),

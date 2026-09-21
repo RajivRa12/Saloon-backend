@@ -1,11 +1,10 @@
 from rest_framework import serializers
 from apps.core.models import (
-    StoreGroup, StoreGroupStatus, StoreGroupType,
-    Outlet, StoreStatusHistory, KycDocument,
-    Plan, AccessCode, AccessCodeRedemption,
-    ServiceCategoryPhase1, CanonicalService, StoreService, StoreServiceMarketplaceStatus,
-    GlobalCustomer, CustomerStatus, CustomerStoreLink, CustomerMergeLog, AuditLog,
-    ImpersonationSession, ImpersonationSessionMode
+    StoreGroup, Outlet, StoreStatusHistory,
+    KycDocument, Plan, AccessCode,
+    ServiceCategoryPhase1, CanonicalService, StoreService,
+    StoreServiceMarketplaceStatus, GlobalCustomer, CustomerStoreLink, CustomerMergeLog,
+    AuditLog, ImpersonationSession, ImpersonationSessionMode
 )
 
 class PlanSerializer(serializers.ModelSerializer):

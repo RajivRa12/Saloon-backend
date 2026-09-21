@@ -6,7 +6,7 @@ from datetime import timedelta
 from django.utils import timezone
 from django.http import HttpResponse
 from django.db import transaction
-from django.db.models import Sum, Count, Q, Avg, F
+from django.db.models import Sum, Count, Q
 from rest_framework import viewsets, status, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -17,21 +17,20 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from django.shortcuts import get_object_or_404
 
 from apps.core.models import (
-    StoreGroup, StoreGroupStatus, StoreGroupType,
-    Outlet, StoreStatusHistory, KycDocument,
-    Plan, AccessCode, AuditLog, InternalUserRole, InternalUser,
-    ServiceCategoryPhase1, CanonicalService, StoreService, StoreServiceMarketplaceStatus,
-    GlobalCustomer, CustomerStatus, CustomerStoreLink, CustomerMergeLog,
-    ImpersonationSession, ImpersonationSessionMode
+    StoreGroup, StoreGroupStatus, Outlet,
+    StoreStatusHistory, KycDocument, Plan,
+    AccessCode, AuditLog, InternalUserRole, ServiceCategoryPhase1, CanonicalService,
+    StoreService, StoreServiceMarketplaceStatus, GlobalCustomer, CustomerStatus,
+    CustomerStoreLink, CustomerMergeLog, ImpersonationSession, ImpersonationSessionMode
 )
 from .permissions import IsSuperAdmin, IsOpsOrSuperAdmin, IsReviewerOrAbove
 from .phase1_serializers import (
     PlanSerializer, AccessCodeSerializer, AccessCodeGenerateSerializer,
     StoreGroupListSerializer, StoreGroupDetailSerializer, StoreGroupTransitionSerializer,
-    KycDocumentSerializer, KycVerifySerializer, OutletSerializer, StoreStatusHistorySerializer,
-    ServiceCategoryPhase1Serializer, CanonicalServiceSerializer, StoreServiceSerializer, StoreServiceReviewSerializer,
-    GlobalCustomerSerializer, CustomerStoreLinkSerializer, CustomerMergeSerializer, CustomerMergeLogSerializer,
-    AuditLogSerializer, ToggleFeatureFlagSerializer, ImpersonationSessionSerializer, ImpersonationStartSerializer
+    KycDocumentSerializer, KycVerifySerializer, ServiceCategoryPhase1Serializer, CanonicalServiceSerializer,
+    StoreServiceSerializer, StoreServiceReviewSerializer, GlobalCustomerSerializer, CustomerMergeSerializer,
+    CustomerMergeLogSerializer, AuditLogSerializer, ToggleFeatureFlagSerializer, ImpersonationSessionSerializer,
+    ImpersonationStartSerializer
 )
 
 class MasterAdminPagination(PageNumberPagination):

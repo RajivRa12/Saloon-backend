@@ -1,20 +1,11 @@
-import io
-import csv
-import json
-from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
-from django.utils import timezone
-from django.test import override_settings
 from rest_framework.test import APIClient
-from rest_framework import status
 
 from apps.core.models import (
     InternalUser, InternalUserRole, StoreGroup, StoreGroupStatus,
-    Outlet, KycDocument, Plan, AccessCode, ServiceCategoryPhase1,
-    CanonicalService, StoreService, StoreServiceMarketplaceStatus,
-    GlobalCustomer, CustomerStoreLink, CustomerMergeLog, AuditLog,
-    ImpersonationSession, ImpersonationSessionMode, Role
+    KycDocument, Plan, StoreService, StoreServiceMarketplaceStatus, GlobalCustomer,
+    CustomerStoreLink, CustomerMergeLog, Role
 )
 
 User = get_user_model()

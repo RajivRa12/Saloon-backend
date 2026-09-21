@@ -1502,7 +1502,7 @@ def _resolve_customer(data):
         customer, _ = GlobalCustomer.objects.get_or_create(phone_e164=normalize_e164(phone), defaults={'name': name})
         return customer
     return GlobalCustomer.objects.create(name=name)
-from apps.core.models import MembershipPlan, Membership, PackagePlan, Package, MembershipStatus
+from apps.core.models import MembershipPlan, Membership, PackagePlan, Package
 from .serializers import (
     MembershipPlanSerializer, MembershipSerializer, SellMembershipSerializer,
     PackagePlanSerializer, PackageSerializer, SellPackageSerializer,

@@ -1,5 +1,4 @@
 from django.db import migrations, models
-import django.db.models.deletion
 
 
 def convert_decimal_to_paise(apps, schema_editor):

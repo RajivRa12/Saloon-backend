@@ -1,4 +1,3 @@
-from decimal import Decimal
 from django.db.models import Sum, Count
 from apps.core.models import InvoiceLine, CommissionAccrual, Payment, Invoice
 def _finalised_items(store_group, date_from, date_to):
