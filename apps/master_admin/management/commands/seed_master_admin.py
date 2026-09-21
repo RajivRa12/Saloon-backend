@@ -408,6 +408,21 @@ class Command(BaseCommand):
             name="NearbyMe Partner Studio (POS Branch)",
             defaults={"contact_number": "+919800000000", "email": "studio.pos@nearbyme.in", "address": "Indiranagar 100ft Road"}
         )
+
+        from apps.core.models import ServiceCategory, Service
+        cat_hair, _ = ServiceCategory.objects.get_or_create(business=demo_business, name="Hair & Styling")
+        Service.objects.get_or_create(category=cat_hair, name="Men's Classic Haircut", defaults={"duration_minutes": 30, "price": 500})
+        Service.objects.get_or_create(category=cat_hair, name="Women's Advanced Styling", defaults={"duration_minutes": 60, "price": 1500})
+        Service.objects.get_or_create(category=cat_hair, name="Hair Coloring (Global)", defaults={"duration_minutes": 90, "price": 3500})
+        
+        cat_spa, _ = ServiceCategory.objects.get_or_create(business=demo_business, name="Spa & Massage")
+        Service.objects.get_or_create(category=cat_spa, name="Swedish Full Body Massage", defaults={"duration_minutes": 60, "price": 2500})
+        Service.objects.get_or_create(category=cat_spa, name="Deep Tissue Therapy", defaults={"duration_minutes": 90, "price": 3200})
+        
+        cat_packages, _ = ServiceCategory.objects.get_or_create(business=demo_business, name="Packages")
+        Service.objects.get_or_create(category=cat_packages, name="Bridal Package Complete", defaults={"duration_minutes": 180, "price": 15000})
+        Service.objects.get_or_create(category=cat_packages, name="Weekend De-stress Combo", defaults={"duration_minutes": 120, "price": 4500})
+
         sample_users_data = [
             ("Rahul Sharma", "rahul.sharma.client@nearbyme.in", "+919900112233"),
             ("Priya Nair", "priya.nair.client@nearbyme.in", "+919900112234"),
