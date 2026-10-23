@@ -81,7 +81,7 @@ def _professional_busy_intervals(professional, day_start, day_end):
         intervals.append((t.start_at, t.end_at))
     for s in AppointmentSlot.objects.filter(
         professional=professional,
-        status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
+        status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED, AppointmentSlotStatus.DONE],
         slot_start__lt=day_end, slot_end__gt=day_start,
     ):
         intervals.append((s.slot_start, s.slot_end))
@@ -107,7 +107,7 @@ def resource_free(outlet, resource_type, start, end):
     busy_resource_ids = set(
         AppointmentSlot.objects.filter(
             resource__in=resources,
-            status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
+            status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED, AppointmentSlotStatus.DONE],
             slot_start__lt=end, slot_end__gt=start,
         ).values_list('resource_id', flat=True)
     )

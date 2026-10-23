@@ -11,10 +11,6 @@ from apps.core.models import (
     StorePublicProfile,
 )
 class MicrositeSerializer(serializers.ModelSerializer):
-    # A store's own public booking page — deliberately single-object only
-    # (see MicrositeView). Every field here is scoped through `store`, so
-    # there's no field a future edit could add that would leak another
-    # store's data; the object itself can never be more than one store.
     store_id = serializers.CharField(source='store.id', read_only=True)
     store_name = serializers.CharField(source='store.name', read_only=True)
     address = serializers.CharField(source='store.address', read_only=True)
@@ -47,9 +43,6 @@ class PublicStoreSerializer(serializers.ModelSerializer):
         profile = getattr(obj, 'public_profile', None)
         return profile.slug if profile else None
     def get_is_premium_listing(self, obj):
-        # The admin flag alone isn't proof of payment — only show the boost
-        # when an active subscription actually bundles it in. See
-        # Store.has_plan_feature.
         return bool(obj.is_premium_listing) and obj.has_plan_feature('includes_premium_listing')
     def get_avg_rating(self, obj):
         from django.db.models import Avg
@@ -90,7 +83,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'email', 'first_name', 'last_name', 'phone', 'loyalty_points', 'expo_push_token']
-        read_only_fields = ['id', 'email', 'loyalty_points']
+        read_only_fields = ['id', 'loyalty_points']
 class CustomerWalletTransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = WalletTransaction
@@ -121,8 +114,6 @@ class CustomerAppointmentSerializer(serializers.ModelSerializer):
         fields = ['id', 'store', 'store_name', 'start_time', 'end_time', 'status', 'total_amount', 'notes', 'items']
         read_only_fields = ['id', 'store_name', 'end_time', 'status', 'total_amount']
     def get_total_amount(self, obj):
-        # Appointment carries no stored total — like Invoice.grand_total_paise,
-        # it's derived from its locked line-item prices, not duplicated.
         return sum((item.price for item in obj.items.all()), start=Decimal('0'))
     def create(self, validated_data):
         import datetime
@@ -264,7 +255,12 @@ class CustomerBookingSlotSerializer(serializers.ModelSerializer):
     professional_name = serializers.CharField(source='professional.display_name', read_only=True, default=None)
     class Meta:
         model = AppointmentSlot
-        fields = ['id', 'store_service', 'store_service_name', 'professional', 'professional_name', 'slot_start', 'slot_end', 'price_paise', 'status']
+        fields = [
+            'id', 'store_service', 'store_service_name', 'professional', 'professional_name',
+            'slot_start', 'slot_end', 'actual_start_time', 'actual_end_time',
+            'start_variance_minutes', 'end_variance_minutes', 'override_reason', 'was_overridden',
+            'price_paise', 'status',
+        ]
         read_only_fields = fields
 class CustomerBookingSerializer(serializers.ModelSerializer):
     outlet_name = serializers.CharField(source='outlet.name', read_only=True)
@@ -281,8 +277,6 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
     def get_slots(self, obj):
-        # A reschedule cancels the old slot and creates a new one — exclude
-        # cancelled slots so the customer doesn't see stale/duplicate entries.
         from apps.core.models import AppointmentSlotStatus
         active_slots = obj.slots.exclude(status=AppointmentSlotStatus.CANCELLED)
         return CustomerBookingSlotSerializer(active_slots, many=True).data

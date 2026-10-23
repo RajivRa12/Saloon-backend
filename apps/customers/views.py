@@ -56,13 +56,6 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['name', 'address', 'location']
     ordering = ['name']
     def list(self, request, *args, **kwargs):
-        # Marketplace cross-store discovery is dark-launched per city (build
-        # guide section 2/27) — a store is still directly reachable through
-        # its own microsite or store id no matter what; only this listing
-        # (Home/Explore's "browse everything nearby") is gated. A city with
-        # no flag row is left open, so existing/already-active cities aren't
-        # retroactively hidden — dark-launch is something an admin opts a
-        # *new* city into via Django admin, not a default-closed gate here.
         from apps.core.models import CityMarketplaceFlag
         queryset = self.filter_queryset(self.get_queryset())
         dark_city_ids = set(
@@ -189,7 +182,7 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
             professional=professional, status=SlotHoldStatus.HELD, expires_at__gt=timezone.now(),
             slot_start__lt=slot_end, slot_end__gt=slot_start,
         ).exists() or AppointmentSlot.objects.filter(
-            professional=professional, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
+            professional=professional, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED, AppointmentSlotStatus.DONE],
             slot_start__lt=slot_end, slot_end__gt=slot_start,
         ).exists()
         if conflict:
@@ -360,8 +353,6 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
             'slot_start': slot_start, 'slot_end': slot_end,
         }
         if hold and hold.professional_id:
-            # The hold already resolved "any available professional" to a
-            # specific one — book that same professional, not a re-roll.
             slot_request['professional_id'] = str(hold.professional_id)
         elif serializer.validated_data.get('professional_id'):
             slot_request['professional_id'] = str(serializer.validated_data['professional_id'])
@@ -369,8 +360,6 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
             created_slots = confirm_booking(booking, [slot_request], actor=None)
         except BookingConflictError as e:
             if online_payment:
-                # We can't hand back the slot we just charged for — refund
-                # immediately rather than leave the customer out of pocket.
                 try:
                     refund_payment(online_payment.gateway_payment_id)
                     online_payment.status = OnlinePaymentStatus.REFUNDED
@@ -489,8 +478,8 @@ class ReferralView(APIView):
         referrer.loyalty_points += REFERRAL_REWARD_POINTS
         referrer.save(update_fields=['loyalty_points'])
         return success_response({"reward_points_awarded": REFERRAL_REWARD_POINTS}, "Referral applied successfully")
-LOYALTY_POINTS_PER_RUPEE = 10  # 500 points = ₹50
-LOYALTY_REDEEM_BLOCK = 500  # must redeem in blocks of this size
+LOYALTY_POINTS_PER_RUPEE = 10
+LOYALTY_REDEEM_BLOCK = 500
 class LoyaltyRedeemView(APIView):
     permission_classes = [IsAuthenticated, IsCustomer]
     def post(self, request):
@@ -798,13 +787,17 @@ class CustomerBookingViewSet(viewsets.ReadOnlyModelViewSet):
         return None
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
-        from apps.core.models import BookingStatus
+        from apps.core.models import BookingStatus, AppointmentSlotStatus, SlotHold, SlotHoldStatus
+        from apps.store_erp.availability import bump_availability_version
         booking = self.get_object()
         if booking.status in (BookingStatus.COMPLETED, BookingStatus.CANCELLED, BookingStatus.NO_SHOW):
             return error_response(f"Cannot cancel a booking that is already {booking.status}.", 400)
         booking.status = BookingStatus.CANCELLED
         booking.cancelled_at = timezone.now()
         booking.save(update_fields=['status', 'cancelled_at'])
+        booking.slots.exclude(status=AppointmentSlotStatus.DONE).update(status=AppointmentSlotStatus.CANCELLED)
+        SlotHold.objects.filter(outlet=booking.outlet, slot_start__lt=booking.booking_end, slot_end__gt=booking.booking_start, status=SlotHoldStatus.HELD).update(status=SlotHoldStatus.RELEASED)
+        bump_availability_version(booking.outlet_id)
         return success_response(None, "Booking cancelled.")
     @action(detail=True, methods=['post'])
     def reschedule(self, request, pk=None):
@@ -821,7 +814,6 @@ class CustomerBookingViewSet(viewsets.ReadOnlyModelViewSet):
         if not slot:
             return error_response("This booking has no active slot to reschedule", 400)
         try:
-            # Customers can't override scheduling conflicts — only staff can.
             reschedule_slot(slot, new_start, actor=request.user)
         except BookingConflictError:
             return error_response("That time is no longer available. Please pick another slot.", 409)

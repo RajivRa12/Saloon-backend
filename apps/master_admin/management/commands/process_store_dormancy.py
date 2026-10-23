@@ -29,11 +29,9 @@ class Command(BaseCommand):
         marked_dormant = 0
         marked_active = 0
 
-        # 1. Active to Dormant
         for store in active_stores:
             last_activity = self.get_last_activity(store)
 
-            # If there's no activity ever, or the last activity was over 30 days ago
             if last_activity is None or last_activity < thirty_days_ago:
                 with transaction.atomic():
                     self.transition(store, StoreGroupStatus.ACTIVE, StoreGroupStatus.DORMANT,
@@ -41,11 +39,9 @@ class Command(BaseCommand):
                     marked_dormant += 1
                     self.stdout.write(f"Marked {store.name} as DORMANT")
 
-        # 2. Dormant to Active
         for store in dormant_stores:
             last_activity = self.get_last_activity(store)
 
-            # If there is recent activity (within 30 days)
             if last_activity and last_activity >= thirty_days_ago:
                 with transaction.atomic():
                     self.transition(store, StoreGroupStatus.DORMANT, StoreGroupStatus.ACTIVE,

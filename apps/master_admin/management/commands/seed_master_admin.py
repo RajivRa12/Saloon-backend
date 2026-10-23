@@ -100,7 +100,6 @@ class Command(BaseCommand):
             defaults={"name": "Master Admin Dev", "phone": "+919999999999", "role": InternalUserRole.SUPERADMIN, "is_active": True}
         )
         self.stdout.write(self.style.SUCCESS("✔ Seeded 3 Internal Executive Users + 'admin' superuser with admin portal access."))
-        # --- ADDED: Dummy Store Admin User ---
         manager_user, _ = User.objects.get_or_create(
             email="manager@nearbyme.com",
             defaults={

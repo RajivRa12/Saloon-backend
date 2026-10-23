@@ -30,10 +30,8 @@ class MasterAdminLoginView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 1. Authenticate credentials against Django user accounts
         user = authenticate(username=email, password=password)
         if not user:
-            # Check fallback if username differs from email
             user_obj = User.objects.filter(email=email).first()
             if user_obj and user_obj.check_password(password):
                 user = user_obj
@@ -44,17 +42,15 @@ class MasterAdminLoginView(generics.GenericAPIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # 2. Strict Platform Separation Check: Must be an active InternalUser
         internal_user = InternalUser.objects.filter(email=email, is_active=True, deleted_at__isnull=True).first()
         
-        # If legacy Master Admin user, automatically bridge to an InternalUser representation
         if not internal_user and getattr(user, 'role', '') == Role.MASTER_ADMIN:
             from apps.core.models import InternalUserRole
             internal_user, _ = InternalUser.objects.get_or_create(
                 email=email,
                 defaults={
                     "name": getattr(user, 'first_name', 'Legacy Master Admin') or "Admin",
-                    "phone": "+919000000000", # E.164 compliant default
+                    "phone": "+919000000000",
                     "role": InternalUserRole.SUPERADMIN,
                     "is_active": True
                 }
@@ -70,14 +66,12 @@ class MasterAdminLoginView(generics.GenericAPIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # 3. Handle Mandatory TOTP 2FA Enforcement
         if not internal_user.totp_secret:
             internal_user.totp_secret = pyotp.random_base32()
             internal_user.save(update_fields=['totp_secret'])
 
         totp = pyotp.TOTP(internal_user.totp_secret)
 
-        # If TOTP code is not provided in this request, require 2FA completion
         if not totp_code:
             payload = {
                 "success": True,
@@ -93,10 +87,8 @@ class MasterAdminLoginView(generics.GenericAPIView):
                 )
             return Response(payload, status=status.HTTP_200_OK)
 
-        # 4. Verify submitted 6-digit TOTP code
         clean_code = str(totp_code).strip()
         if not totp.verify(clean_code, valid_windows=1):
-            # Record failed 2FA attempt in audit log
             AuditLog.objects.create(
                 actor_id=str(internal_user.id),
                 actor_type="internal_user",
@@ -112,22 +104,18 @@ class MasterAdminLoginView(generics.GenericAPIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # 5. Successful 2FA Authentication
         if not internal_user.is_totp_enabled:
             internal_user.is_totp_enabled = True
         
-        # Stamp activity timestamp for 60-minute server-side timeout rule
         internal_user.last_login_at = timezone.now()
         internal_user.save(update_fields=['is_totp_enabled', 'last_login_at'])
 
-        # Generate simplejwt access and refresh tokens
         refresh = RefreshToken.for_user(user)
         refresh['role'] = internal_user.role
         refresh['internal_user_id'] = str(internal_user.id)
         refresh['phone_e164'] = internal_user.phone
         refresh['is_internal'] = True
 
-        # Audit login success
         AuditLog.objects.create(
             actor_id=str(internal_user.id),
             actor_type="internal_user",
@@ -167,7 +155,6 @@ class MasterAdminLogoutView(generics.GenericAPIView):
     def post(self, request):
         internal_user = getattr(request, 'internal_user', None)
         if internal_user:
-            # Expire session immediately server-side
             internal_user.last_login_at = timezone.now() - timedelta(minutes=120)
             internal_user.save(update_fields=['last_login_at'])
 

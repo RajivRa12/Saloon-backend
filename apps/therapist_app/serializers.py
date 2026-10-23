@@ -111,8 +111,10 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = AppointmentSlot
         fields = [
-            'id', 'booking', 'store_service_name', 'outlet_name', 'customer_name', 'slot_start', 'slot_end', 'price_paise', 'status',
-            'is_home_service', 'service_address', 'on_the_way_at',
+            'id', 'booking', 'store_service_name', 'outlet_name', 'customer_name', 'slot_start', 'slot_end',
+            'actual_start_time', 'actual_end_time', 'start_variance_minutes', 'end_variance_minutes',
+            'override_reason', 'was_overridden',
+            'price_paise', 'status', 'is_home_service', 'service_address', 'on_the_way_at',
         ]
         read_only_fields = fields
     def get_outlet_name(self, obj):

@@ -147,7 +147,6 @@ class PlatformCommissionLedgerAdmin(admin.ModelAdmin):
     autocomplete_fields = ('store',)
     ordering = ('-created_at',)
     def has_add_permission(self, request):
-        # Auto-computed when a booking completes (see apps/store_erp/views.py BookingViewSet.complete).
         return False
 @admin.register(AdCampaign)
 class AdCampaignAdmin(admin.ModelAdmin):
@@ -559,9 +558,61 @@ class BookingAdmin(admin.ModelAdmin):
     inlines = [AppointmentSlotInline]
 @admin.register(AppointmentSlot)
 class AppointmentSlotAdmin(admin.ModelAdmin):
-    list_display = ('booking', 'store_service', 'professional', 'resource', 'slot_start', 'slot_end', 'status', 'was_overridden')
-    list_filter = ('status', 'was_overridden')
-    search_fields = ('booking__id', 'store_service__name', 'professional__display_name')
+    list_display = (
+        'booking', 'store_service', 'professional',
+        'slot_start', 'actual_start_time', 'start_variance_display',
+        'slot_end', 'actual_end_time', 'end_variance_display',
+        'status', 'was_overridden'
+    )
+    list_filter = ('status', 'was_overridden', 'professional')
+    search_fields = ('booking__booking_code', 'booking__id', 'store_service__name', 'professional__display_name', 'override_reason')
+    readonly_fields = (
+        'actual_start_time', 'actual_end_time', 'start_variance_minutes',
+        'end_variance_minutes', 'created_at', 'was_overridden', 'override_reason', 'overridden_by'
+    )
+    fieldsets = (
+        ('Booking & Service', {
+            'fields': ('booking', 'store_service', 'professional', 'resource', 'price_paise', 'status')
+        }),
+        ('Scheduled Time', {
+            'fields': ('slot_start', 'slot_end')
+        }),
+        ('Actual Execution & Variance Audit', {
+            'fields': (
+                'actual_start_time', 'start_variance_minutes',
+                'actual_end_time', 'end_variance_minutes',
+                'was_overridden', 'override_reason', 'overridden_by'
+            )
+        }),
+        ('Metadata', {
+            'fields': ('created_at',)
+        }),
+    )
+
+    def _format_variance(self, mins):
+        if mins is None:
+            return "-"
+        if mins == 0:
+            return "On time"
+        abs_m = abs(mins)
+        h = abs_m // 60
+        m = abs_m % 60
+        if h > 0 and m > 0:
+            time_part = f"{h} hr {m} mins"
+        elif h > 0:
+            time_part = f"{h} hr"
+        else:
+            time_part = f"{m} mins"
+        direction = "delayed" if mins > 0 else "early"
+        return f"{time_part} {direction}"
+
+    def start_variance_display(self, obj):
+        return self._format_variance(obj.start_variance_minutes)
+    start_variance_display.short_description = "Start Var."
+
+    def end_variance_display(self, obj):
+        return self._format_variance(obj.end_variance_minutes)
+    end_variance_display.short_description = "End Var."
 @admin.register(CommissionRule)
 class CommissionRuleAdmin(admin.ModelAdmin):
     list_display = ('store_group', 'professional', 'applies_to', 'rate_type', 'rate_value', 'effective_from')

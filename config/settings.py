@@ -167,10 +167,6 @@ SIMPLE_JWT = {
 }
 CORS_ALLOW_ALL_ORIGINS = True
 from corsheaders.defaults import default_headers
-# X-Store-Id: Brand Owners send this to scope store_erp requests to the store
-# they've picked (see apps/store_erp/permissions.py).
-# X-Impersonation-Token: Master Admin support/ops sessions (see
-# apps/store_erp/permissions.py's check_impersonation_session).
 CORS_ALLOW_HEADERS = list(default_headers) + ['x-store-id', 'x-impersonation-token']
 import os
 MEDIA_URL = '/media/'

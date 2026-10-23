@@ -171,9 +171,6 @@ class StoreGroupTransitionSerializer(serializers.Serializer):
     reason = serializers.CharField(required=True, max_length=500, help_text="Mandatory audit reason for lifecycle state transition")
 
 
-# =====================================================================
-# TICKET 6: SERVICE TAXONOMY & CUSTOM SERVICE REVIEW QUEUE SERIALIZERS
-# =====================================================================
 
 class ServiceCategoryPhase1Serializer(serializers.ModelSerializer):
     """
@@ -240,9 +237,6 @@ class StoreServiceReviewSerializer(serializers.Serializer):
         return data
 
 
-# =====================================================================
-# TICKETS 7 & 8: GLOBAL CUSTOMER REGISTRY & RECORD-MERGING ENGINE
-# =====================================================================
 
 class CustomerStoreLinkSerializer(serializers.ModelSerializer):
     """
@@ -333,9 +327,6 @@ class CustomerMergeLogSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-# =====================================================================
-# TICKETS 9, 10 & 11: AUDIT LOG VIEWER & FEATURE FLAG ADMINISTRATION
-# =====================================================================
 
 class AuditLogSerializer(serializers.ModelSerializer):
     """
@@ -362,9 +353,6 @@ class ToggleFeatureFlagSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=500, required=False, allow_blank=True, default="Operational feature flag adjustment")
 
 
-# =====================================================================
-# TICKET 9: IMPERSONATION INFRASTRUCTURE SERIALIZERS
-# =====================================================================
 
 class ImpersonationSessionSerializer(serializers.ModelSerializer):
     """

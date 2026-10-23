@@ -82,7 +82,6 @@ class RequestOTPView(APIView):
             return Response({"message": f"Please wait {wait}s before requesting another code."}, status=429)
         code = f"{random.randint(0, 999999):06d}"
         
-        # Apple/Google App Store review backdoor & Demo Login
         if phone_e164 == "+919999999999":
             code = "123456"
 
@@ -105,7 +104,6 @@ class RequestOTPView(APIView):
             print(f"[OTP] {phone_e164} -> {code} (expires in {OTP_TTL_MINUTES}m)")
             payload["dev_otp"] = code
         except SMSDeliveryError as e:
-            # Fallback to dev_otp so testing isn't completely blocked by broken SMS APIs
             print(f"[SMS FAILED] Falling back to dev_otp. Error: {e}")
             payload["dev_otp"] = code
             

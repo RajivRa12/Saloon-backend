@@ -110,7 +110,87 @@ class ProfessionalReviewViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin
         response = ReviewResponse.objects.create(
             review=review, professional_account=self.request.professional_account, response_text=response_text
         )
-        return success_response(ReviewResponseSerializer(response).data, "Response posted.", 201)
+def format_human_variance(minutes):
+    abs_m = abs(minutes)
+    h = abs_m // 60
+    m = abs_m % 60
+    if h > 0 and m > 0:
+        time_part = f"{h} hr {m} mins"
+    elif h > 0:
+        time_part = f"{h} hr"
+    else:
+        time_part = f"{m} mins"
+    direction = "early" if minutes < 0 else "delayed"
+    return f"{time_part} {direction}"
+
+
+def notify_variance_stakeholders(slot, action_type, diff_minutes, is_variance, reason):
+    """
+    Delivers real-time notifications to Customer App and Store Admin / Reception
+    whenever a service is started or completed with a time variance or override reason.
+    """
+    try:
+        from apps.core.notifications import notify_user
+        from apps.core.models import User, Role
+        from django.db.models import Q
+
+        service_name = slot.store_service.name if slot.store_service else "Service"
+        prof_name = slot.professional.display_name if slot.professional else "Therapist"
+        variance_str = format_human_variance(diff_minutes) if diff_minutes != 0 else "on time"
+
+        if slot.booking and slot.booking.customer and slot.booking.customer.phone_e164:
+            customer_user = User.objects.filter(phone=slot.booking.customer.phone_e164).first()
+            if customer_user:
+                if action_type == 'start':
+                    title = f"Service Started: {service_name}"
+                    msg = f"Your therapist {prof_name} started your appointment {variance_str}."
+                else:
+                    title = f"Service Completed: {service_name}"
+                    msg = f"Your service '{service_name}' was completed {variance_str}."
+                if reason:
+                    msg += f" Note: {reason}"
+
+                notify_user(
+                    customer_user,
+                    title,
+                    msg,
+                    notif_type='SYSTEM',
+                    data={
+                        'type': 'booking_schedule_update',
+                        'booking_id': str(slot.booking.id),
+                        'slot_id': str(slot.id),
+                    }
+                )
+
+        outlet = slot.outlet or (slot.booking.outlet if slot.booking else None)
+        if outlet:
+            store_staff = User.objects.filter(
+                role__in=[Role.STORE_ADMIN, Role.RECEPTIONIST, Role.BRAND_OWNER]
+            ).filter(
+                Q(outlet=outlet) | Q(store__outlet=outlet)
+            ).distinct()
+
+            for staff_member in store_staff:
+                admin_title = f"Schedule Variance: {prof_name} ({service_name})"
+                admin_msg = f"{action_type.capitalize()} variance ({variance_str}) for booking #{slot.booking.booking_code or str(slot.booking.id)[:8]}."
+                if reason:
+                    admin_msg += f" Reason: {reason}"
+                notify_user(
+                    staff_member,
+                    admin_title,
+                    admin_msg,
+                    notif_type='SYSTEM',
+                    data={
+                        'type': 'slot_variance_alert',
+                        'booking_id': str(slot.booking.id),
+                        'slot_id': str(slot.id),
+                        'outlet_id': str(outlet.id),
+                    }
+                )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Failed to notify variance stakeholders: %s", e)
+
 class TherapistScheduleViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     serializer_class = AppointmentSlotScheduleSerializer
     permission_classes = [IsAuthenticated, IsProfessional]
@@ -118,38 +198,125 @@ class TherapistScheduleViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     filterset_fields = ['status']
     ordering = ['slot_start']
     def get_queryset(self):
+        from apps.core.models import BookingStatus
         return AppointmentSlot.objects.filter(
             professional__user_account=self.request.professional_account
+        ).exclude(
+            status=AppointmentSlotStatus.CANCELLED
+        ).exclude(
+            booking__status=BookingStatus.CANCELLED
         ).select_related('booking', 'booking__outlet', 'booking__customer', 'store_service')
     def _sync_booking_status(self, booking):
         from apps.core.models import BookingStatus
         from apps.store_erp.views import _record_platform_commission
         slots = list(booking.slots.exclude(status=AppointmentSlotStatus.CANCELLED))
+        
+        if booking.actual_start_time is None:
+            started_slots = [s for s in slots if s.actual_start_time]
+            if started_slots:
+                booking.actual_start_time = min(s.actual_start_time for s in started_slots)
+                booking.save(update_fields=['actual_start_time'])
+
         if slots and all(s.status == AppointmentSlotStatus.DONE for s in slots):
             if booking.status != BookingStatus.COMPLETED:
                 booking.status = BookingStatus.COMPLETED
+                if booking.actual_end_time is None:
+                    completed_slots = [s for s in slots if s.actual_end_time]
+                    if completed_slots:
+                        booking.actual_end_time = max(s.actual_end_time for s in completed_slots)
                 booking.save()
                 _record_platform_commission(booking)
         elif booking.status == BookingStatus.CONFIRMED and any(s.status == AppointmentSlotStatus.STARTED for s in slots):
             booking.status = BookingStatus.IN_SERVICE
-            booking.save()
+            booking.save(update_fields=['status'])
+
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         slot = self.get_object()
+        
+        if slot.status == AppointmentSlotStatus.STARTED:
+            return success_response(AppointmentSlotScheduleSerializer(slot).data, "Service already started.")
+
         if slot.status != AppointmentSlotStatus.SCHEDULED:
             return error_response(f"Cannot start a slot in status '{slot.status}'.", 400)
+
+        now = timezone.now()
+        diff_seconds = (now - slot.slot_start).total_seconds()
+        diff_minutes = round(diff_seconds / 60.0)
+        is_variance = abs(diff_minutes) > 15
+
+        reason = (request.data.get('reason') or '').strip()
+
+        if is_variance and not reason:
+            return error_response(
+                f"Appointment is starting {format_human_variance(diff_minutes)}. A valid reason is required.",
+                400
+            )
+
+        if slot.actual_start_time is None:
+            slot.actual_start_time = now
+            slot.start_variance_minutes = diff_minutes
+
         slot.status = AppointmentSlotStatus.STARTED
+
+        if reason:
+            var_prefix = f"Start variance ({format_human_variance(diff_minutes)}): " if is_variance else ""
+            slot.override_reason = f"{var_prefix}{reason}".strip()
+            slot.was_overridden = True
+            if hasattr(request, 'user') and request.user and request.user.is_authenticated:
+                slot.overridden_by = request.user
+
         slot.save()
         self._sync_booking_status(slot.booking)
+        if is_variance or reason:
+            notify_variance_stakeholders(slot, 'start', diff_minutes, is_variance, reason)
         return success_response(AppointmentSlotScheduleSerializer(slot).data, "Service started.")
+
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
         slot = self.get_object()
+        
+        if slot.status == AppointmentSlotStatus.DONE:
+            return success_response(AppointmentSlotScheduleSerializer(slot).data, "Service already completed.")
+
         if slot.status not in [AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED]:
             return error_response(f"Cannot complete a slot in status '{slot.status}'.", 400)
+
+        now = timezone.now()
+        target_end = slot.slot_end or slot.slot_start
+        diff_seconds = (now - target_end).total_seconds()
+        diff_minutes = round(diff_seconds / 60.0)
+        is_variance = abs(diff_minutes) > 15
+
+        reason = (request.data.get('reason') or '').strip()
+
+        if is_variance and not reason:
+            return error_response(
+                f"Appointment is completing {format_human_variance(diff_minutes)}. A valid reason is required.",
+                400
+            )
+
+        if slot.actual_end_time is None:
+            slot.actual_end_time = now
+            slot.end_variance_minutes = diff_minutes
+
+        if slot.actual_start_time is None:
+            slot.actual_start_time = slot.slot_start
+
         slot.status = AppointmentSlotStatus.DONE
+
+        if reason:
+            var_prefix = f"Completion variance ({format_human_variance(diff_minutes)}): " if is_variance else "Completion note: "
+            existing_reason = f"{slot.override_reason}\n" if slot.override_reason else ""
+            slot.override_reason = f"{existing_reason}{var_prefix}{reason}".strip()
+            slot.was_overridden = True
+            if hasattr(request, 'user') and request.user and request.user.is_authenticated:
+                slot.overridden_by = request.user
+
         slot.save()
         self._sync_booking_status(slot.booking)
+        if is_variance or reason:
+            notify_variance_stakeholders(slot, 'complete', diff_minutes, is_variance, reason)
         return success_response(AppointmentSlotScheduleSerializer(slot).data, "Marked complete.")
     def _parse_latlng(self, request):
         lat, lng = request.data.get('lat'), request.data.get('lng')

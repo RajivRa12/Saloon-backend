@@ -25,7 +25,6 @@ def send_otp_sms(phone_e164, code):
     try:
         token = settings.MESSAGE_CENTRAL_AUTH_TOKEN
         
-        # Send OTP Message
         sender_id = getattr(settings, 'MESSAGE_CENTRAL_SENDER_ID', 'NRBYME')
         message_text = f"{code} is your Nearbyme verification code. It will expire in 10 minutes."
         
@@ -55,6 +54,5 @@ def send_otp_sms(phone_e164, code):
     except requests.RequestException as e:
         raise SMSDeliveryError(f"Could not reach Message Central API: {e}")
         
-    # Check Message Central response for success
     if send_resp.status_code not in (200, 201) and data.get("status") != "Success":
         raise SMSDeliveryError(data.get('message') or "Message Central rejected the request.")

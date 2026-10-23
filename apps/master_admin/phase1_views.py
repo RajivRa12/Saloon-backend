@@ -91,7 +91,6 @@ class PlanViewSet(viewsets.ModelViewSet):
         )
 
     def perform_destroy(self, instance):
-        # Soft delete execution
         instance.delete()
         AuditLog.objects.create(
             actor_id=str(getattr(self.request, 'internal_user', 'system')),
@@ -171,7 +170,6 @@ class AccessCodeViewSet(viewsets.ModelViewSet):
         prefix = data['prefix'].upper().strip()
         plan_tag = plan.name[:5].upper().replace(' ', '')
         
-        # Ensure collision-free generation
         for _ in range(10):
             suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
             code_str = f"{prefix}-{plan_tag}-{suffix}"
@@ -240,7 +238,6 @@ class StoreGroupViewSet(viewsets.ModelViewSet):
         if from_status == to_status:
             return Response({"success": False, "message": f"Store Group is already in status '{to_status}'."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Ticket 4 State Machine Enforcement: Protect against illegal leaps (e.g., skipping review or approval)
         allowed_transitions = {
             StoreGroupStatus.APPLIED: [StoreGroupStatus.UNDER_REVIEW, StoreGroupStatus.OFFBOARDED],
             StoreGroupStatus.UNDER_REVIEW: [StoreGroupStatus.APPROVED, StoreGroupStatus.APPLIED, StoreGroupStatus.OFFBOARDED],
@@ -259,7 +256,6 @@ class StoreGroupViewSet(viewsets.ModelViewSet):
         internal_user = getattr(self.request, 'internal_user', None)
         actor_name = internal_user.name if internal_user else "System Admin"
 
-        # Record Status History Audit
         StoreStatusHistory.objects.create(
             store_group=store_group,
             from_status=from_status,
@@ -274,13 +270,11 @@ class StoreGroupViewSet(viewsets.ModelViewSet):
             store_group.approved_at = timezone.now()
         store_group.save(update_fields=['status', 'approved_at'])
 
-        # Cascade outlet activation/deactivation (Page 1 Rule: suspended stores fail operations!)
         if to_status == StoreGroupStatus.ACTIVE:
             Outlet.objects.filter(store_group=store_group).update(status='active')
         elif to_status in [StoreGroupStatus.SUSPENDED, StoreGroupStatus.DORMANT, StoreGroupStatus.OFFBOARDED]:
             Outlet.objects.filter(store_group=store_group).update(status='inactive')
 
-        # Audit Log Record
         AuditLog.objects.create(
             actor_id=str(getattr(internal_user, 'id', 'system')),
             actor_type="internal_user",
@@ -394,9 +388,6 @@ class KycDocumentViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
 
-# =====================================================================
-# TICKET 6: SERVICE TAXONOMY & CUSTOM STORE SERVICE REVIEW QUEUE
-# =====================================================================
 
 class ServiceCategoryPhase1ViewSet(viewsets.ModelViewSet):
     """
@@ -510,9 +501,6 @@ class StoreServiceViewSet(viewsets.ModelViewSet):
         return Response({"success": True, "message": f"Custom service '{service.name}' rejected from public marketplace listing. (Note: remains active in-store for local billing).", "data": self.get_serializer(service).data}, status=status.HTTP_200_OK)
 
 
-# =====================================================================
-# TICKETS 7 & 8: GLOBAL CUSTOMER REGISTRY & RECORD-MERGING ENGINE
-# =====================================================================
 
 class GlobalCustomerViewSet(viewsets.ModelViewSet):
     """
@@ -530,9 +518,9 @@ class GlobalCustomerViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ['process_deletion', 'destroy']:
-            return [IsAuthenticated(), IsSuperAdmin()] # Strict superadmin for data deletion/DPDP
+            return [IsAuthenticated(), IsSuperAdmin()]
         if self.action in ['merge', 'create', 'update', 'partial_update']:
-            return [IsAuthenticated(), IsOpsOrSuperAdmin()] # Ops can merge and administer profiles
+            return [IsAuthenticated(), IsOpsOrSuperAdmin()]
         return [IsAuthenticated(), IsReviewerOrAbove()]
 
     @action(detail=True, methods=['post'], url_path='process-deletion')
@@ -547,7 +535,7 @@ class GlobalCustomerViewSet(viewsets.ModelViewSet):
         old_email = customer.email
         
         customer.name = f"Deleted Customer {customer.id.hex[:6].upper()}"
-        customer.phone_e164 = f"+91000{customer.id.hex[:7]}" # Anonymized E.164 placeholder
+        customer.phone_e164 = f"+91000{customer.id.hex[:7]}"
         customer.email = f"anonymized.{customer.id.hex[:8]}@dpdp-compliance.in"
         customer.status = CustomerStatus.DELETED
         customer.save(update_fields=['name', 'phone_e164', 'email', 'status'])
@@ -595,7 +583,6 @@ class GlobalCustomerViewSet(viewsets.ModelViewSet):
                 prim_link = CustomerStoreLink.objects.filter(customer=primary, store_group=sec_link.store_group).first()
 
                 if prim_link:
-                    # Both profiles visited the exact same salon! Aggregate integer paise & visit frequency without loss.
                     prim_link.lifetime_spend_paise = (prim_link.lifetime_spend_paise or 0) + (sec_link.lifetime_spend_paise or 0)
                     prim_link.visit_count = (prim_link.visit_count or 0) + (sec_link.visit_count or 0)
                     
@@ -611,15 +598,13 @@ class GlobalCustomerViewSet(viewsets.ModelViewSet):
                         prim_link.notes = f"{prim_link.notes or ''} | [Merged from profile {secondary.id}]: {sec_link.notes}".strip(' |')
 
                     prim_link.save()
-                    sec_link.delete() # Remove secondary link after absorbing stats
+                    sec_link.delete()
                 else:
-                    # Primary profile had no prior history with this salon; cleanly reassign link ownership.
                     sec_link.customer = primary
                     sec_link.save(update_fields=['customer'])
 
                 links_merged_count += 1
 
-            # Record immutable merger audit history (Ticket 8)
             merge_log = CustomerMergeLog.objects.create(
                 surviving_customer_id=primary.id,
                 merged_customer_id=secondary.id,
@@ -632,10 +617,8 @@ class GlobalCustomerViewSet(viewsets.ModelViewSet):
                 }
             )
 
-            # Soft delete secondary profile
             secondary.delete()
 
-            # Create systemic audit trail
             AuditLog.objects.create(
                 actor_id=str(getattr(internal_user, 'id', 'system')),
                 actor_type="internal_user",
@@ -682,7 +665,6 @@ class CustomerMergeLogViewSet(viewsets.ReadOnlyModelViewSet):
             log.reverted_at = timezone.now()
             log.save(update_fields=['reverted_at'])
 
-            # Restore the soft-deleted secondary customer profile using all_objects manager
             GlobalCustomer.all_objects.filter(id=log.merged_customer_id).update(deleted_at=None)
 
             AuditLog.objects.create(
@@ -699,9 +681,6 @@ class CustomerMergeLogViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"success": True, "message": f"Successfully reverted merge log {log.id} and un-deleted duplicate customer {log.merged_customer_id}."}, status=status.HTTP_200_OK)
 
 
-# =====================================================================
-# TICKETS 9 & 10: AUDIT LOG SYSTEM VIEWER & OPERATIONS HEALTH KPI DASHBOARD
-# =====================================================================
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -729,7 +708,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
         writer = csv.writer(response)
         writer.writerow(['ID', 'Actor ID', 'Actor Type', 'Action', 'Entity Type', 'Entity ID', 'Before JSON', 'After JSON', 'IP Address', 'Created At UTC'])
-        for log in queryset[:1000]:  # Cap export at 1000 records per request for memory health
+        for log in queryset[:1000]:
             writer.writerow([
                 str(log.id), log.actor_id or '', log.actor_type, log.action,
                 log.entity_type, str(log.entity_id),
@@ -761,7 +740,6 @@ class ImpersonationViewSet(viewsets.ReadOnlyModelViewSet):
         internal_user = getattr(request, 'internal_user', None)
         user_role = getattr(internal_user, 'role', '')
 
-        # Ticket 9 rule: Write mode requires superadmin role and documented reason
         if data['mode'] == ImpersonationSessionMode.WRITE:
             if user_role != InternalUserRole.SUPERADMIN:
                 return Response({
@@ -833,7 +811,6 @@ class OpsHealthMetricsView(generics.GenericAPIView):
         last_7_days = now - timedelta(days=7)
         next_30_days = now + timedelta(days=30)
 
-        # 1. Store counts by status (Applied / Under Review / Approved / Active / Dormant / Suspended / Offboarded)
         store_stats = StoreGroup.objects.aggregate(
             total=Count('id'),
             applied=Count('id', filter=Q(status=StoreGroupStatus.APPLIED)),
@@ -845,17 +822,14 @@ class OpsHealthMetricsView(generics.GenericAPIView):
             offboarded=Count('id', filter=Q(status=StoreGroupStatus.OFFBOARDED)),
         )
 
-        # 2. Approval-to-first-login rate & Weekly active stores (Using status_changed_at / creation proxy until Store Admin logins exist)
         total_approved_or_active = (store_stats['approved'] or 0) + (store_stats['active'] or 0) + (store_stats['dormant'] or 0)
-        weekly_active_stores = StoreGroup.objects.filter(status=StoreGroupStatus.ACTIVE).count() # Proxy until App 2 JWT logins
+        weekly_active_stores = StoreGroup.objects.filter(status=StoreGroupStatus.ACTIVE).count()
         approval_to_first_login_rate_pct = round((weekly_active_stores / total_approved_or_active * 100.0), 2) if total_approved_or_active > 0 else 0.0
 
-        # 3. Access Codes: Issued / Redeemed / Expiring in 30 days broken down by source_tag
         codes_total_issued = AccessCode.objects.count()
         codes_total_redeemed = AccessCode.objects.aggregate(total=Sum('redemption_count'))['total'] or 0
         expiring_codes_by_tag = list(AccessCode.objects.filter(expires_at__gte=now, expires_at__lte=next_30_days).values('source_tag').annotate(count=Count('id')))
 
-        # 4. Customers: Total, global vs walk-in-only (is_global=False), new this week
         customer_stats = GlobalCustomer.objects.aggregate(
             total=Count('id'),
             global_count=Count('id', filter=Q(is_global=True)),
@@ -863,11 +837,9 @@ class OpsHealthMetricsView(generics.GenericAPIView):
             new_this_week=Count('id', filter=Q(created_at__gte=last_7_days))
         )
 
-        # 5. Custom Service Review Queue: size and average age in hours
         pending_services = StoreService.objects.filter(marketplace_status=StoreServiceMarketplaceStatus.PENDING)
         pending_queue_size = pending_services.count()
         
-        # Compute average age in hours
         total_age_hours = 0
         for srv in pending_services:
             total_age_hours += (now - srv.submitted_at).total_seconds() / 3600.0

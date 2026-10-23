@@ -100,7 +100,7 @@ def _resolve_resource(booking, req, resource_type, slot_start, slot_end, buffer_
             raise BookingEngineError(f"No {resource_type} resource configured for this outlet.")
     for resource in candidates:
         busy_qs = AppointmentSlot.objects.filter(
-            resource=resource, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
+            resource=resource, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED, AppointmentSlotStatus.DONE],
             slot_start__lt=slot_end + dt.timedelta(minutes=buffer_after), slot_end__gt=slot_start,
         ).exclude(booking=booking)
         if exclude_slot_id:
@@ -130,7 +130,7 @@ def confirm_booking(booking, slot_requests, actor=None, override_token=None, ove
         the_date = timezone.localtime(slot_start).date()
         professional = _resolve_professional(booking, req, store_service, the_date, slot_start, slot_end)
         prof_conflict = AppointmentSlot.objects.filter(
-            professional=professional, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED],
+            professional=professional, status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED, AppointmentSlotStatus.DONE],
             slot_start__lt=slot_end, slot_end__gt=slot_start,
         ).exclude(booking=booking).exists()
         resource, resource_conflict = (None, False)

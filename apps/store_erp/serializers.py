@@ -425,8 +425,9 @@ class AppointmentSlotSerializer(serializers.ModelSerializer):
         model = AppointmentSlot
         fields = [
             'id', 'store_service', 'store_service_name', 'professional', 'professional_name',
-            'resource', 'resource_name', 'slot_start', 'slot_end', 'price_paise', 'status',
-            'was_overridden', 'override_reason', 'created_at'
+            'resource', 'resource_name', 'slot_start', 'slot_end',
+            'actual_start_time', 'actual_end_time', 'start_variance_minutes', 'end_variance_minutes',
+            'price_paise', 'status', 'was_overridden', 'override_reason', 'created_at'
         ]
         read_only_fields = fields
 class BookingSerializer(serializers.ModelSerializer):
@@ -447,8 +448,6 @@ class BookingSerializer(serializers.ModelSerializer):
             return obj.booked_by.get_full_name() or obj.booked_by.email
         return None
     def get_payment(self, obj):
-        # Staff need to know how much is still owed at check-in when a
-        # customer paid a deposit online rather than the full amount.
         payment = getattr(obj, 'online_payment', None)
         if not payment:
             return None

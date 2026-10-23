@@ -1543,6 +1543,8 @@ class Booking(SoftDeleteModel):
     created_at = models.DateTimeField(auto_now_add=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancellation_reason = models.TextField(blank=True, null=True)
+    actual_start_time = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the service started")
+    actual_end_time = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the service completed")
     class Meta:
         db_table = 'booking'
         ordering = ['-booking_start']
@@ -1576,6 +1578,10 @@ class AppointmentSlot(models.Model):
     resource = models.ForeignKey(Resource, on_delete=models.SET_NULL, null=True, blank=True, related_name='appointment_slots')
     slot_start = models.DateTimeField()
     slot_end = models.DateTimeField()
+    actual_start_time = models.DateTimeField(null=True, blank=True, help_text="Server-verified actual timestamp when service started")
+    actual_end_time = models.DateTimeField(null=True, blank=True, help_text="Server-verified actual timestamp when service completed")
+    start_variance_minutes = models.IntegerField(null=True, blank=True, help_text="Minutes difference between scheduled start and actual start (positive = late, negative = early)")
+    end_variance_minutes = models.IntegerField(null=True, blank=True, help_text="Minutes difference between scheduled end and actual end (positive = late, negative = early)")
     price_paise = models.BigIntegerField(help_text="Price stored strictly in integer paise, locked at time of booking")
     status = models.CharField(max_length=20, choices=AppointmentSlotStatus.choices, default=AppointmentSlotStatus.SCHEDULED)
     was_overridden = models.BooleanField(default=False, help_text="True if this slot was booked despite a conflict warning")
@@ -1967,7 +1973,8 @@ class ProfessionalAccount(models.Model):
             self.phone_e164 = normalize_e164(self.phone_e164)
         super().save(*args, **kwargs)
     def __str__(self):
-        return f"{self.name} ({self.user.email})"
+        email = self.user.email if self.user else (self.phone_e164 or "unlinked")
+        return f"{self.name} ({email})"
 class ProfessionalPortfolio(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     professional_account = models.ForeignKey(ProfessionalAccount, on_delete=models.CASCADE, related_name='portfolio_items')
