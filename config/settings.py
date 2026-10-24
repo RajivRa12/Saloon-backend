@@ -134,7 +134,6 @@ JAZZMIN_SETTINGS = {
 }
 JAZZMIN_UI_TWEAKS = {
     "theme": "flatly",
-    "dark_mode_theme": "darkly",
     "navbar": "navbar-dark",
 }
 AUTH_USER_MODEL = 'core.User'

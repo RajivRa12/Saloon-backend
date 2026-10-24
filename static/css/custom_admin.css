@@ -1,12 +1,18 @@
-/* DJ-06: High-contrast typography and theme overrides for Django Jazzmin Admin */
+/* ==========================================================================
+   Nearbyme Django Admin — High-Contrast & Readability Overrides
+   Eliminates all dark/light contrast conflicts across all themes and OS modes
+   ========================================================================== */
 
-/* Rich slate headers ensuring strong contrast (> 7:1) across all themes */
-.content-wrapper h1,
-.content-wrapper h2,
-.content-wrapper h3,
-.content-wrapper h4,
-.content-wrapper h5,
-.content-wrapper h6,
+/* 1. Global Page Structure & Backgrounds */
+body,
+.content-wrapper,
+.main-footer {
+    background-color: #f4f6f9 !important;
+    color: #0f172a !important;
+}
+
+/* 2. Typography & Headings */
+h1, h2, h3, h4, h5, h6,
 .content-header h1,
 .content-header h2,
 .card-title,
@@ -14,35 +20,168 @@
 .content h2,
 .content h3 {
     color: #0f172a !important; /* Rich Slate 900 */
+    font-weight: 700 !important;
+}
+
+/* 3. Cards & Containers */
+.card {
+    background-color: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+.card-header {
+    background-color: #ffffff !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    color: #0f172a !important;
+}
+
+.card-body {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+}
+
+/* 4. Table & Changelist Grid (Fix for unreadable words in table) */
+#result_list,
+.table,
+table.table {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+}
+
+/* Table Header */
+.table thead,
+.table thead tr,
+.table thead th,
+#result_list thead th {
+    background-color: #f8fafc !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    font-size: 0.875rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+    border-top: none !important;
+    border-bottom: 2px solid #cbd5e1 !important;
+    padding: 12px 14px !important;
+}
+
+.table thead th a,
+#result_list thead th a {
+    color: #0f172a !important;
+    font-weight: 700 !important;
+}
+
+.table thead th a:hover,
+#result_list thead th a:hover {
+    color: #2563eb !important;
+    text-decoration: underline !important;
+}
+
+/* Table Rows & Alternating Background */
+.table tbody tr,
+#result_list tbody tr {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    transition: background-color 0.15s ease-in-out !important;
+}
+
+.table-striped tbody tr:nth-of-type(odd),
+#result_list tbody tr:nth-of-type(odd) {
+    background-color: #f8fafc !important;
+}
+
+.table-striped tbody tr:nth-of-type(even),
+#result_list tbody tr:nth-of-type(even) {
+    background-color: #ffffff !important;
+}
+
+.table tbody tr:hover,
+#result_list tbody tr:hover {
+    background-color: #eff6ff !important; /* Soft blue highlight */
+}
+
+/* Table Cells & Text (100% Crisp & Legible) */
+.table tbody td,
+.table tbody th,
+#result_list tbody td,
+#result_list tbody th {
+    background-color: inherit !important;
+    color: #0f172a !important;
+    font-size: 0.925rem !important;
+    font-weight: 500 !important;
+    vertical-align: middle !important;
+    border-top: 1px solid #e2e8f0 !important;
+    padding: 10px 14px !important;
+}
+
+/* Table Links */
+.table tbody td a,
+.table tbody th a,
+#result_list tbody td a,
+#result_list tbody th a {
+    color: #1d4ed8 !important; /* High-contrast Royal Blue */
     font-weight: 600 !important;
 }
 
-/* Breadcrumbs readability */
+.table tbody td a:hover,
+#result_list tbody td a:hover {
+    color: #1e40af !important;
+    text-decoration: underline !important;
+}
+
+/* 5. Paginator & Bottom Count (Fix for faint '5 internal users') */
+.paginator,
+p.paginator,
+.card-footer,
+.card-footer p,
+.card-footer span,
+span.quiet {
+    background-color: transparent !important;
+    color: #334155 !important; /* Deep Slate 700 — easily readable */
+    font-weight: 600 !important;
+    font-size: 0.925rem !important;
+    padding: 12px 6px !important;
+}
+
+.paginator a,
+p.paginator a {
+    color: #1d4ed8 !important;
+    font-weight: 600 !important;
+}
+
+/* 6. Breadcrumbs */
 .breadcrumb {
     background-color: transparent !important;
 }
+
 .breadcrumb-item,
 .breadcrumb-item a {
-    color: #334155 !important; /* Slate 700 */
+    color: #475569 !important;
     font-weight: 500 !important;
-}
-.breadcrumb-item.active {
-    color: #0f172a !important; /* Slate 900 */
-    font-weight: 600 !important;
-}
-.breadcrumb-item + .breadcrumb-item::before {
-    color: #64748b !important;
 }
 
-/* Action selection counter & actions container */
-.actions {
+.breadcrumb-item.active {
     color: #0f172a !important;
-    font-weight: 500 !important;
-    background: #f8fafc !important;
+    font-weight: 700 !important;
+}
+
+.breadcrumb-item + .breadcrumb-item::before {
+    color: #94a3b8 !important;
+}
+
+/* 7. Action Bar */
+.actions {
+    background-color: #f8fafc !important;
     border: 1px solid #e2e8f0 !important;
     border-radius: 6px !important;
-    padding: 8px 12px !important;
+    color: #0f172a !important;
+    padding: 10px 14px !important;
+    margin-bottom: 12px !important;
 }
+
 .actions span.action-counter,
 .actions span.all,
 .actions span.question,
@@ -50,100 +189,88 @@
     color: #0f172a !important;
     font-weight: 600 !important;
 }
+
 .actions span.clear a {
     color: #2563eb !important;
     text-decoration: underline !important;
 }
 
-/* Table styles, headers and links */
-.table thead th {
-    color: #0f172a !important;
-    background-color: #f1f5f9 !important;
-    border-bottom: 2px solid #cbd5e1 !important;
-    font-weight: 700 !important;
-}
-.table tbody td {
-    color: #1e293b !important;
-    vertical-align: middle !important;
-}
-.table tbody tr:hover {
-    background-color: #f8fafc !important;
-}
-.table a {
-    color: #1d4ed8 !important; /* High contrast blue */
-    font-weight: 500 !important;
-}
-.table a:hover {
-    color: #1e40af !important;
-    text-decoration: underline !important;
-}
-
-/* Form labels, help text and controls */
-label {
-    color: #0f172a !important;
-    font-weight: 600 !important;
-}
-.form-group .help-block,
-.form-group .help,
-.form-text {
-    color: #475569 !important;
-    font-size: 0.875rem !important;
-}
-
-/* Changelist sidebar filter */
+/* 8. Changelist Sidebar Filter */
 #changelist-filter {
     background-color: #ffffff !important;
     border: 1px solid #e2e8f0 !important;
     border-radius: 6px !important;
 }
+
 #changelist-filter h2,
 #changelist-filter h3 {
+    background-color: #f8fafc !important;
     color: #0f172a !important;
     font-weight: 700 !important;
     border-bottom: 1px solid #e2e8f0 !important;
+    padding: 10px 14px !important;
 }
+
 #changelist-filter a {
     color: #334155 !important;
+    font-weight: 500 !important;
 }
+
 #changelist-filter a:hover,
 #changelist-filter li.selected a {
     color: #1d4ed8 !important;
+    font-weight: 700 !important;
+}
+
+/* 9. Forms, Labels & Help Text */
+label {
+    color: #0f172a !important;
     font-weight: 600 !important;
 }
 
-/* Validation error alerts */
+.form-group .help-block,
+.form-group .help,
+.form-text {
+    color: #64748b !important;
+    font-size: 0.875rem !important;
+}
+
+/* 10. Form Validation Alerts */
 .errorlist,
 .text-danger,
 .invalid-feedback {
-    color: #b91c1c !important; /* Dark red, 7:1+ contrast */
+    color: #b91c1c !important;
     font-weight: 600 !important;
 }
+
 .errornote {
     background-color: #fef2f2 !important;
     border: 1px solid #f87171 !important;
     color: #991b1b !important;
-    padding: 10px 14px !important;
+    padding: 12px 16px !important;
     border-radius: 6px !important;
     font-weight: 600 !important;
 }
 
-/* Pagination readability */
+/* 11. Pagination Controls */
 .pagination .page-item .page-link {
     color: #0f172a !important;
     border-color: #cbd5e1 !important;
 }
+
 .pagination .page-item.active .page-link {
     background-color: #0f172a !important;
     border-color: #0f172a !important;
     color: #ffffff !important;
 }
 
-/* Primary buttons */
+/* 12. Primary Buttons */
 .btn-primary {
     background-color: #0f172a !important;
     border-color: #0f172a !important;
     color: #ffffff !important;
 }
+
 .btn-primary:hover {
     background-color: #1e293b !important;
     border-color: #1e293b !important;
