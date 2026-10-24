@@ -825,6 +825,29 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
         if not slot_start:
             slot_start = timezone.now() + timedelta(hours=2)
 
+        if timezone.is_naive(slot_start):
+            slot_start = timezone.make_aware(slot_start)
+
+        # QA-05: Prevent booking elapsed/past time slots
+        if slot_start < timezone.now() - timedelta(minutes=5):
+            return Response(
+                {"error": "Cannot book an appointment slot in the past. Please select an upcoming date and time."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # QA-06: Prevent duplicate concurrent/exact customer bookings
+        existing_duplicate = Booking.objects.filter(
+            customer=customer,
+            outlet=outlet,
+            booking_start=slot_start,
+            status__in=[BookingStatus.CONFIRMED, BookingStatus.IN_SERVICE, BookingStatus.DRAFT]
+        ).first()
+        if existing_duplicate:
+            return Response(
+                {"error": f"You already have a confirmed appointment at this venue scheduled for {slot_start.strftime('%d %b, %I:%M %p')}. To avoid duplicate charges, please choose a different time."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         duration = int(request.data.get('duration_minutes') or 45)
         slot_end = slot_start + timedelta(minutes=duration)
 
