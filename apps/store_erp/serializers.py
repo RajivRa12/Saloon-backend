@@ -305,15 +305,88 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['user']
 class CustomerCRMDataSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
     customer_code = serializers.SerializerMethodField()
     crm_profile = CustomerProfileSerializer(read_only=True)
     loyalty_points = serializers.IntegerField(read_only=True)
-    total_visits = serializers.IntegerField(read_only=True, default=0)
-    total_spend = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True, default=0.00)
-    average_spend = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True, default=0.00)
-    outstanding_balance = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True, default=0.00)
+    total_visits = serializers.SerializerMethodField()
+    total_spend = serializers.SerializerMethodField()
+    average_spend = serializers.SerializerMethodField()
+    outstanding_balance = serializers.SerializerMethodField()
     favorite_therapist_name = serializers.CharField(read_only=True, default=None)
     active_membership = serializers.SerializerMethodField()
+    visits = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        full = f"{obj.first_name} {obj.last_name}".strip()
+        return full or obj.email
+
+    def _get_metrics(self, obj):
+        if hasattr(obj, '_cached_crm_metrics'):
+            return obj._cached_crm_metrics
+        from apps.core.models import Invoice, InvoiceStatus
+        from django.db.models import Sum, Avg
+        from decimal import Decimal
+        store = self.context.get('store')
+        invoices = Invoice.objects.filter(customer=obj)
+        if store:
+            invoices = invoices.filter(store=store)
+        total_visits = invoices.count()
+        paid_invoices = invoices.filter(status=InvoiceStatus.PAID)
+        sum_paid = paid_invoices.aggregate(s=Sum('grand_total_paise'))['s'] or 0
+        avg_paid = paid_invoices.aggregate(a=Avg('grand_total_paise'))['a'] or 0
+        unpaid = invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(
+            u=Sum('grand_total_paise')
+        )['u'] or 0
+        obj._cached_crm_metrics = {
+            'total_visits': getattr(obj, 'total_visits', None) or total_visits,
+            'total_spend': float(getattr(obj, 'total_spend', None) or (Decimal(sum_paid) / 100)),
+            'average_spend': float(getattr(obj, 'average_spend', None) or (Decimal(avg_paid) / 100)),
+            'outstanding_balance': float(getattr(obj, 'outstanding_balance', None) or (Decimal(unpaid) / 100)),
+        }
+        return obj._cached_crm_metrics
+
+    def get_total_visits(self, obj):
+        return self._get_metrics(obj)['total_visits']
+
+    def get_total_spend(self, obj):
+        return self._get_metrics(obj)['total_spend']
+
+    def get_average_spend(self, obj):
+        return self._get_metrics(obj)['average_spend']
+
+    def get_outstanding_balance(self, obj):
+        return self._get_metrics(obj)['outstanding_balance']
+
+    def get_visits(self, obj):
+        store = self.context.get('store')
+        from apps.core.models import Appointment, Invoice
+        from decimal import Decimal
+        items = []
+        appts = Appointment.objects.filter(customer=obj)
+        if store:
+            appts = appts.filter(store=store)
+        for a in appts.select_related('therapist').order_by('-start_time')[:20]:
+            first_item = a.items.first()
+            items.append({
+                'date': a.start_time.isoformat() if a.start_time else (a.created_at.isoformat() if a.created_at else None),
+                'service_name': first_item.service.name if first_item and first_item.service else 'Service',
+                'therapist_name': a.therapist.get_full_name() if a.therapist else '—',
+                'amount': float(a.total_amount or 0),
+            })
+        if not items:
+            invs = Invoice.objects.filter(customer=obj)
+            if store:
+                invs = invs.filter(store=store)
+            for inv in invs.order_by('-created_at')[:20]:
+                items.append({
+                    'date': inv.finalised_at.isoformat() if inv.finalised_at else inv.created_at.isoformat(),
+                    'service_name': f"Invoice #{inv.invoice_number or str(inv.id)[:8]}",
+                    'therapist_name': '—',
+                    'amount': float(Decimal(inv.grand_total_paise or 0) / 100),
+                })
+        return items
+
     def get_active_membership(self, obj):
         from apps.core.models import CustomerMembership
         from datetime import date
@@ -339,11 +412,11 @@ class CustomerCRMDataSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'customer_code', 'first_name', 'last_name', 'email', 'phone',
+            'id', 'customer_code', 'name', 'first_name', 'last_name', 'email', 'phone',
             'loyalty_points', 'crm_profile',
             'total_visits', 'total_spend', 'average_spend',
             'outstanding_balance', 'favorite_therapist_name',
-            'active_membership'
+            'active_membership', 'visits'
         ]
 class ERPStaffSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()

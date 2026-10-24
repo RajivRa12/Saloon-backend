@@ -785,7 +785,11 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     serializer_class = AttendanceSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
     def get_queryset(self):
-        return Attendance.objects.filter(store=self.request.user.store)
+        qs = Attendance.objects.filter(store=self.request.user.store)
+        date = self.request.query_params.get('date')
+        if date:
+            qs = qs.filter(date=date)
+        return qs.order_by('-date', '-id')
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
 class LeaveRequestViewSet(viewsets.ModelViewSet):
@@ -964,9 +968,89 @@ class WaitlistViewSet(viewsets.ModelViewSet):
     serializer_class = WaitlistSerializer
     permission_classes = [IsAuthenticated, IsStoreStaff]
     def get_queryset(self):
-        return Waitlist.objects.filter(store=self.request.user.store)
-    def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        user = self.request.user
+        qs = Waitlist.objects.all()
+        if user.store:
+            qs = qs.filter(store=user.store)
+        elif user.outlet_id:
+            qs = qs.filter(outlet_id=user.outlet_id)
+        return qs.order_by('-created_at')
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        service_id = data.get('service') or data.get('store_service') or data.get('service_id')
+        customer_id = data.get('customer') or data.get('customer_id')
+
+        from apps.core.models import User, GlobalCustomer, Service, StoreService
+        customer_obj = None
+        if customer_id:
+            try:
+                customer_obj = User.objects.filter(id=customer_id).first()
+            except Exception:
+                pass
+            if not customer_obj:
+                gc = GlobalCustomer.objects.filter(id=customer_id).first()
+                if gc:
+                    customer_obj, _ = User.objects.get_or_create(
+                        email=f"customer_{gc.id}@nearbyme.local",
+                        defaults={
+                            'first_name': gc.name.split(' ')[0] if gc.name else 'Guest',
+                            'last_name': ' '.join(gc.name.split(' ')[1:]) if gc.name and ' ' in gc.name else '',
+                            'phone': gc.phone_e164 or '',
+                            'role': 'CUSTOMER',
+                            'store': request.user.store,
+                        }
+                    )
+        if not customer_obj:
+            name = (data.get('customer_name') or 'Walk-in').strip()
+            customer_obj = User.objects.create(
+                first_name=name.split(' ')[0],
+                last_name=' '.join(name.split(' ')[1:]) if ' ' in name else '',
+                phone=data.get('customer_phone') or '',
+                email=f"guest_{User.objects.count()}@nearbyme.local",
+                role='CUSTOMER',
+                store=request.user.store,
+            )
+            customer_obj.set_unusable_password()
+            customer_obj.save()
+
+        service_obj = None
+        if service_id:
+            try:
+                service_obj = Service.objects.filter(id=service_id).first()
+            except Exception:
+                pass
+            if not service_obj:
+                store_svc = StoreService.objects.filter(id=service_id).first()
+                if store_svc:
+                    business = request.user.store.business if request.user.store else None
+                    if business:
+                        service_obj = Service.objects.filter(category__business=business, name=store_svc.name).first()
+                        if not service_obj:
+                            cat = business.categories.first()
+                            if cat:
+                                service_obj = Service.objects.create(
+                                    category=cat,
+                                    name=store_svc.name,
+                                    price=store_svc.default_price_paise / 100,
+                                    duration_minutes=store_svc.duration_min,
+                                    is_active=True,
+                                )
+                    if not service_obj:
+                        service_obj = Service.objects.first()
+        if not service_obj:
+            service_obj = Service.objects.first()
+
+        waitlist = Waitlist.objects.create(
+            store=request.user.store,
+            outlet_id=request.user.outlet_id,
+            customer=customer_obj,
+            service=service_obj,
+            preferred_date=data.get('preferred_date'),
+            preferred_time_slot=data.get('preferred_time_slot', 'Morning'),
+            status=data.get('status', 'WAITING'),
+        )
+        return success_response(WaitlistSerializer(waitlist).data, "Waitlist entry created", 201)
 from apps.core.models import Invoice, InvoiceStatus, Appointment
 from .serializers import CustomerCRMDataSerializer
 from django.db.models import Sum, Count, Avg
@@ -1294,6 +1378,9 @@ class BookingViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        booking_start = serializer.validated_data.get('booking_start')
+        if booking_start and booking_start < timezone.now() - datetime.timedelta(minutes=5):
+            return error_response("Cannot book an appointment whose start time has already passed.", 400)
         booking = serializer.save(
             outlet=serializer.validated_data.get('outlet') or request.user.outlet,
             booked_by=request.user,

@@ -12,7 +12,7 @@ from apps.core.models import (
 )
 from .availability import (
     service_duration_and_buffers, service_price_paise,
-    eligible_professionals, free_windows_for_professional,
+    eligible_professionals, free_windows_for_professional, get_outlet_timezone,
 )
 OVERRIDE_TOKEN_SALT = 'store-admin-booking-override'
 class BookingEngineError(Exception):
@@ -46,7 +46,7 @@ def _earliest_shift_start(professional, outlet, the_date):
     ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=the_date)).order_by('start_time').first()
     return shift.start_time if shift else dt.time.max
 def _pick_fewest_bookings_today(candidates, outlet, the_date):
-    tz = timezone.get_current_timezone()
+    tz = get_outlet_timezone(outlet)
     day_start = timezone.make_aware(dt.datetime.combine(the_date, dt.time.min), tz)
     day_end = day_start + dt.timedelta(days=1)
     counts = {
@@ -118,10 +118,13 @@ def confirm_booking(booking, slot_requests, actor=None, override_token=None, ove
     has_valid_override = bool(override_token) and bool(override_reason) and verify_override_token(override_token, booking.id, slot_requests)
     conflicts = []
     resolved = []
+    now = timezone.now()
     for req in slot_requests:
         slot_start, slot_end = req['slot_start'], req['slot_end']
         if slot_end <= slot_start:
             raise BookingEngineError("slot_end must be after slot_start.")
+        if slot_start < now - dt.timedelta(minutes=5) and not has_valid_override:
+            raise BookingEngineError("Cannot book an appointment whose start time has already passed.")
         try:
             store_service = StoreService.objects.get(id=req['store_service_id'], store_group=booking.outlet.store_group)
         except StoreService.DoesNotExist:

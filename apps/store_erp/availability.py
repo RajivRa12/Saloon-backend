@@ -45,18 +45,37 @@ def eligible_professionals(outlet, skill_tag, professional_id=None):
     if skill_tag:
         qs = qs.filter(skills__skill_tag=skill_tag)
     return qs.distinct()
+from zoneinfo import ZoneInfo
+
+def get_outlet_timezone(outlet):
+    if outlet and hasattr(outlet, 'legacy_stores'):
+        legacy = outlet.legacy_stores.first()
+        if legacy and getattr(legacy, 'timezone', None):
+            try:
+                return ZoneInfo(legacy.timezone)
+            except Exception:
+                pass
+    return ZoneInfo('Asia/Kolkata')
+
 def _shift_windows(professional, outlet, the_date):
     weekday = the_date.weekday()
     shifts = ProfessionalShift.objects.filter(
         professional=professional, outlet=outlet, weekday=weekday, effective_from__lte=the_date
     ).filter(Q(effective_to__isnull=True) | Q(effective_to__gte=the_date))
-    tz = timezone.get_current_timezone()
+    tz = get_outlet_timezone(outlet)
     windows = []
     for shift in shifts:
-        start = timezone.make_aware(dt.datetime.combine(the_date, shift.start_time), tz)
-        end = timezone.make_aware(dt.datetime.combine(the_date, shift.end_time), tz)
-        if end > start:
-            windows.append((start, end))
+        start_time = shift.start_time
+        end_time = shift.end_time
+        if outlet and outlet.opening_time and start_time < outlet.opening_time:
+            start_time = outlet.opening_time
+        if outlet and outlet.closing_time and end_time > outlet.closing_time:
+            end_time = outlet.closing_time
+        if end_time > start_time:
+            start = timezone.make_aware(dt.datetime.combine(the_date, start_time), tz)
+            end = timezone.make_aware(dt.datetime.combine(the_date, end_time), tz)
+            if end > start:
+                windows.append((start, end))
     return windows
 def _subtract_interval(windows, busy_start, busy_end):
     result = []
@@ -123,12 +142,16 @@ def compute_availability(outlet, store_service, the_date, professional_id=None):
     professionals = list(eligible_professionals(outlet, skill_tag, professional_id))
     step = dt.timedelta(minutes=SLOT_GRANULARITY_MINUTES)
     slot_map = {}
+    now = timezone.now()
     for professional in professionals:
         for win_start, win_end in free_windows_for_professional(professional, outlet, the_date, duration_min, buffer_before, buffer_after):
             candidate = win_start + dt.timedelta(minutes=buffer_before)
             latest_start = win_end - dt.timedelta(minutes=duration_min + buffer_after)
             while candidate <= latest_start:
                 slot_end = candidate + dt.timedelta(minutes=duration_min)
+                if candidate <= now:
+                    candidate += step
+                    continue
                 if resource_type != ResourceType.NONE and not resource_free(outlet, resource_type, candidate, slot_end + dt.timedelta(minutes=buffer_after)):
                     candidate += step
                     continue
