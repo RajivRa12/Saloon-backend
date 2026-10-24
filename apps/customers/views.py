@@ -766,9 +766,9 @@ class PublicTherapistViewSet(viewsets.ReadOnlyModelViewSet):
         ).order_by('-follower_count')[:10]
     serializer_class = PublicTherapistSerializer
     permission_classes = [AllowAny]
-class CustomerBookingViewSet(viewsets.ReadOnlyModelViewSet):
+class CustomerBookingViewSet(viewsets.ModelViewSet):
     """Phase1 (GlobalCustomer/Booking) bookings for the logged-in customer, with
-    actions to tip a professional directly and to review a completed booking."""
+    actions to create, tip a professional directly, and to review a completed booking."""
     serializer_class = CustomerBookingSerializer
     permission_classes = [IsAuthenticated, IsCustomer]
     def get_queryset(self):
@@ -785,6 +785,85 @@ class CustomerBookingViewSet(viewsets.ReadOnlyModelViewSet):
         if user.email:
             return GlobalCustomer.objects.filter(email=user.email).first()
         return None
+
+    def create(self, request, *args, **kwargs):
+        from datetime import timedelta, datetime
+        from django.utils.dateparse import parse_datetime
+        from apps.core.models import (
+            GlobalCustomer, Booking, BookingStatus, BookingSource, normalize_e164,
+            Store, StoreService, AppointmentSlot, AppointmentSlotStatus, Professional, Outlet
+        )
+        user = request.user
+        if user.phone:
+            customer, _ = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(user.phone), defaults={'name': user.get_full_name() or user.email, 'email': user.email}
+            )
+        else:
+            customer, _ = GlobalCustomer.objects.get_or_create(email=user.email, defaults={'name': user.get_full_name() or user.email})
+
+        store_id = request.data.get('store_id')
+        store = None
+        if store_id:
+            cleaned_id = str(store_id).replace('salon-', '').strip()
+            if cleaned_id.isdigit():
+                store = Store.objects.filter(id=int(cleaned_id)).first()
+        if not store:
+            store = Store.objects.first()
+
+        outlet = store.outlet if store else Outlet.objects.first()
+
+        raw_start = request.data.get('slot_start')
+        if not raw_start and request.data.get('slot_date') and request.data.get('slot_time'):
+            t_str = request.data['slot_time']
+            try:
+                dt = datetime.strptime(f"{request.data['slot_date']} {t_str}", "%Y-%m-%d %I:%M %p")
+                raw_start = dt.isoformat()
+            except Exception:
+                raw_start = f"{request.data['slot_date']}T11:30:00"
+
+        slot_start = parse_datetime(str(raw_start)) if raw_start else timezone.now() + timedelta(hours=2)
+        if not slot_start:
+            slot_start = timezone.now() + timedelta(hours=2)
+
+        duration = int(request.data.get('duration_minutes') or 45)
+        slot_end = slot_start + timedelta(minutes=duration)
+
+        booking = Booking.objects.create(
+            outlet=outlet,
+            customer=customer,
+            source=BookingSource.ONLINE,
+            status=BookingStatus.CONFIRMED,
+            booking_start=slot_start,
+            booking_end=slot_end,
+            is_home_service=bool(request.data.get('is_home_service', False)),
+            service_address=request.data.get('service_address') or request.data.get('address') or None,
+        )
+
+        service_id = request.data.get('service_id')
+        svc = None
+        if service_id:
+            cleaned_svc = str(service_id).replace('svc-', '').strip()
+            if cleaned_svc.isdigit():
+                svc = StoreService.objects.filter(id=int(cleaned_svc)).first()
+        if not svc and outlet:
+            svc = StoreService.objects.filter(store_group=outlet.store_group).first()
+
+        price_paise = int(svc.default_price_paise) if svc else int(float(request.data.get('amount') or 500) * 100)
+        prof = Professional.objects.filter(outlet=outlet, is_bookable=True).first() if outlet else None
+
+        AppointmentSlot.objects.create(
+            booking=booking,
+            outlet=outlet,
+            store_service=svc,
+            professional=prof,
+            slot_start=slot_start,
+            slot_end=slot_end,
+            price_paise=price_paise,
+            status=AppointmentSlotStatus.SCHEDULED,
+        )
+
+        booking.refresh_from_db()
+        return success_response(CustomerBookingSerializer(booking).data, "Appointment booked successfully.", status_code=201)
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         from apps.core.models import BookingStatus, AppointmentSlotStatus, SlotHold, SlotHoldStatus
