@@ -276,7 +276,8 @@ class StaffAvailability(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
-        verbose_name_plural = "Staff Availabilities"
+        verbose_name = "Staff Availability"
+        verbose_name_plural = "Staff Availability"
         unique_together = ('staff', 'day_of_week')
         ordering = ['day_of_week', 'start_time']
     def __str__(self):
@@ -1364,6 +1365,8 @@ class ServiceCategoryPhase1(SoftDeleteModel):
     is_active = models.BooleanField(default=True)
     class Meta:
         db_table = 'category'
+        verbose_name = "Master Service Category"
+        verbose_name_plural = "Master Service Categories"
         ordering = ['display_order', 'name']
     def __str__(self):
         return f"{self.name} ({self.applies_to})"
@@ -1548,7 +1551,53 @@ class Booking(SoftDeleteModel):
     class Meta:
         db_table = 'booking'
         ordering = ['-booking_start']
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        # 1. Booking end must be strictly after start (DJ-01)
+        if self.booking_start and self.booking_end and self.booking_end <= self.booking_start:
+            raise ValidationError({
+                'booking_end': "Booking end time must be after booking start time."
+            })
+        # 2. Parent booking time boundary must encompass all active associated slots (DJ-01)
+        if self.pk:
+            for slot in self.slots.exclude(status=AppointmentSlotStatus.CANCELLED):
+                if self.booking_start and slot.slot_start and slot.slot_start < self.booking_start:
+                    raise ValidationError({
+                        'booking_start': f"Booking start time ({self.booking_start}) cannot be after slot start time ({slot.slot_start})."
+                    })
+                if self.booking_end and slot.slot_end and slot.slot_end > self.booking_end:
+                    raise ValidationError({
+                        'booking_end': f"Booking end time ({self.booking_end}) cannot be before slot end time ({slot.slot_end})."
+                    })
+            # 3. Cross-outlet relationship consistency (DJ-02)
+            if self.outlet_id:
+                for slot in self.slots.exclude(status=AppointmentSlotStatus.CANCELLED).select_related('professional', 'resource'):
+                    if slot.professional and slot.professional.outlet_id and slot.professional.outlet_id != self.outlet_id:
+                        raise ValidationError({
+                            'outlet': (
+                                f"Outlet conflict: Booking belongs to '{self.outlet.name}', but assigned professional "
+                                f"'{slot.professional.display_name}' belongs to '{slot.professional.outlet.name}'."
+                            )
+                        })
+                    if slot.resource and slot.resource.outlet_id and slot.resource.outlet_id != self.outlet_id:
+                        raise ValidationError({
+                            'outlet': (
+                                f"Outlet conflict: Booking belongs to '{self.outlet.name}', but assigned resource "
+                                f"'{slot.resource.name}' belongs to '{slot.resource.outlet.name}'."
+                            )
+                        })
+
     def save(self, *args, **kwargs):
+        from django.utils import timezone
+        # If status is cancelled, synchronize cancellation timestamp and reason (DJ-03)
+        if self.status == BookingStatus.CANCELLED:
+            if not self.cancelled_at:
+                self.cancelled_at = timezone.now()
+            if not self.cancellation_reason:
+                self.cancellation_reason = "Cancelled via Admin"
+
         if not self.booking_code:
             from django.db import transaction
             with transaction.atomic():
@@ -1563,6 +1612,13 @@ class Booking(SoftDeleteModel):
                 super().save(*args, **kwargs)
         else:
             super().save(*args, **kwargs)
+
+        # Synchronize associated slots on cancellation (DJ-03)
+        if self.status == BookingStatus.CANCELLED and self.pk:
+            self.slots.filter(status__in=[AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED]).update(
+                status=AppointmentSlotStatus.CANCELLED
+            )
+
     def __str__(self):
         return f"Booking {self.booking_code or self.id} @ {self.outlet.name} ({self.status})"
 class AppointmentSlotStatus(models.TextChoices):
@@ -1591,6 +1647,47 @@ class AppointmentSlot(models.Model):
     class Meta:
         db_table = 'appointment_slot'
         ordering = ['slot_start']
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        # 1. Slot end must be strictly after slot start (DJ-01)
+        if self.slot_start and self.slot_end and self.slot_end <= self.slot_start:
+            raise ValidationError({
+                'slot_end': "Slot end time must be after slot start time."
+            })
+        # 2. Slot must stay within parent booking's timeframe if booking exists (DJ-01)
+        if self.booking_id:
+            booking = self.booking
+            if self.slot_start and booking.booking_start and self.slot_start < booking.booking_start:
+                raise ValidationError({
+                    'slot_start': f"Slot start time ({self.slot_start}) cannot precede booking start time ({booking.booking_start})."
+                })
+            if self.slot_end and booking.booking_end and self.slot_end > booking.booking_end:
+                raise ValidationError({
+                    'slot_end': f"Slot end time ({self.slot_end}) cannot exceed booking end time ({booking.booking_end})."
+                })
+            # 3. Cross-outlet relationship consistency (DJ-02)
+            if booking.outlet_id:
+                if self.professional and self.professional.outlet_id and self.professional.outlet_id != booking.outlet_id:
+                    raise ValidationError({
+                        'professional': (
+                            f"Professional '{self.professional.display_name}' belongs to outlet "
+                            f"'{self.professional.outlet.name}', but booking is at '{booking.outlet.name}'."
+                        )
+                    })
+                if self.resource and self.resource.outlet_id and self.resource.outlet_id != booking.outlet_id:
+                    raise ValidationError({
+                        'resource': (
+                            f"Resource '{self.resource.name}' belongs to outlet "
+                            f"'{self.resource.outlet.name}', but booking is at '{booking.outlet.name}'."
+                        )
+                    })
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.store_service.name} {self.slot_start} ({self.status})"
 class SlotHoldStatus(models.TextChoices):
@@ -1646,6 +1743,8 @@ class QueueEntry(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     class Meta:
         db_table = 'queue_entry'
+        verbose_name = "Queue Entry"
+        verbose_name_plural = "Queue Entries"
         ordering = ['checked_in_at']
     def __str__(self):
         return f"{self.guest_name or (self.customer.name if self.customer else 'Walk-in')} @ {self.outlet.name} ({self.status})"

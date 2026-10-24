@@ -103,6 +103,9 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),
+]
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 JAZZMIN_SETTINGS = {
@@ -112,7 +115,8 @@ JAZZMIN_SETTINGS = {
     "welcome_sign": "Welcome to Nearbyme Staff & ERP Admin",
     "copyright": "Nearbyme Inc",
     "search_model": ["core.User", "core.Store"],
-    "show_ui_builder": True,
+    "show_ui_builder": False,
+    "custom_css": "css/custom_admin.css",
     "topmenu_links": [
         {"name": "Home",  "url": "admin:index", "permissions": ["auth.view_user"]},
         {"model": "core.User"},
@@ -129,8 +133,9 @@ JAZZMIN_SETTINGS = {
     "default_icon_children": "fas fa-circle",
 }
 JAZZMIN_UI_TWEAKS = {
-    "theme": "lumen",
+    "theme": "flatly",
     "dark_mode_theme": "darkly",
+    "navbar": "navbar-dark",
 }
 AUTH_USER_MODEL = 'core.User'
 REST_FRAMEWORK = {

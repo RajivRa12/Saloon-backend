@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
 from django.utils import timezone
@@ -291,6 +292,10 @@ class AccessCodeAdmin(admin.ModelAdmin):
 class AccessCodeRedemptionAdmin(admin.ModelAdmin):
     list_display = ('access_code', 'store_group', 'redeemed_at', 'term_start', 'term_end')
     search_fields = ('store_group__name', 'access_code__code')
+    def has_add_permission(self, request):
+        return False
+    def has_change_permission(self, request, obj=None):
+        return False
 @admin.register(StoreGroup)
 class StoreGroupAdmin(admin.ModelAdmin):
     list_display = ('name', 'business_type', 'status', 'owner_name', 'owner_phone', 'created_at')
@@ -302,6 +307,10 @@ class StoreStatusHistoryAdmin(admin.ModelAdmin):
     list_display = ('store_group', 'from_status', 'to_status', 'changed_by', 'changed_by_type', 'created_at')
     list_filter = ('to_status', 'changed_by_type')
     search_fields = ('store_group__name', 'reason')
+    def has_add_permission(self, request):
+        return False
+    def has_change_permission(self, request, obj=None):
+        return False
 class OutletAppointmentInline(admin.TabularInline):
     model = Appointment
     fields = ('customer', 'start_time', 'end_time', 'status')
@@ -546,18 +555,121 @@ class ResourceAdmin(admin.ModelAdmin):
     list_filter = ('resource_type', 'is_bookable', 'outlet')
     search_fields = ('name', 'outlet__name')
     readonly_fields = ('deleted_at',)
+class AppointmentSlotInlineForm(forms.ModelForm):
+    class Meta:
+        model = AppointmentSlot
+        fields = '__all__'
+
+    def clean(self):
+        cleaned_data = super().clean()
+        slot_start = cleaned_data.get('slot_start')
+        slot_end = cleaned_data.get('slot_end')
+        professional = cleaned_data.get('professional')
+        resource = cleaned_data.get('resource')
+        booking = cleaned_data.get('booking')
+
+        if slot_start and slot_end and slot_end <= slot_start:
+            raise forms.ValidationError({'slot_end': "Slot end time must be after slot start time."})
+
+        outlet = getattr(booking, 'outlet', None)
+        if outlet:
+            if professional and professional.outlet_id and professional.outlet_id != outlet.id:
+                raise forms.ValidationError({
+                    'professional': f"Professional '{professional.display_name}' belongs to outlet '{professional.outlet.name}', but booking is at '{outlet.name}'."
+                })
+            if resource and resource.outlet_id and resource.outlet_id != outlet.id:
+                raise forms.ValidationError({
+                    'resource': f"Resource '{resource.name}' belongs to outlet '{resource.outlet.name}', but booking is at '{outlet.name}'."
+                })
+        return cleaned_data
+
 class AppointmentSlotInline(admin.TabularInline):
     model = AppointmentSlot
+    form = AppointmentSlotInlineForm
     extra = 0
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        resolved = request.resolver_match
+        if resolved and 'object_id' in resolved.kwargs:
+            booking = Booking.objects.filter(pk=resolved.kwargs['object_id']).first()
+            if booking and booking.outlet:
+                if db_field.name == 'professional':
+                    kwargs['queryset'] = Professional.objects.filter(outlet=booking.outlet)
+                elif db_field.name == 'resource':
+                    kwargs['queryset'] = Resource.objects.filter(outlet=booking.outlet)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+class BookingAdminForm(forms.ModelForm):
+    class Meta:
+        model = Booking
+        fields = '__all__'
+
+    def clean(self):
+        cleaned_data = super().clean()
+        start = cleaned_data.get('booking_start')
+        end = cleaned_data.get('booking_end')
+        outlet = cleaned_data.get('outlet')
+
+        # DJ-01: Reject booking end earlier than or equal to start
+        if start and end and end <= start:
+            self.add_error('booking_end', "Booking end time must be after booking start time.")
+
+        # DJ-02: Check cross-outlet consistency against existing non-cancelled slots
+        if self.instance and self.instance.pk and outlet:
+            for slot in self.instance.slots.exclude(status='cancelled').select_related('professional', 'resource'):
+                if slot.professional and slot.professional.outlet_id and slot.professional.outlet_id != outlet.id:
+                    self.add_error(
+                        'outlet',
+                        f"Cross-outlet conflict: Assigned professional '{slot.professional.display_name}' belongs to outlet '{slot.professional.outlet.name}'. All slots must match booking outlet."
+                    )
+                if slot.resource and slot.resource.outlet_id and slot.resource.outlet_id != outlet.id:
+                    self.add_error(
+                        'outlet',
+                        f"Cross-outlet conflict: Assigned resource '{slot.resource.name}' belongs to outlet '{slot.resource.outlet.name}'. All slots must match booking outlet."
+                    )
+        return cleaned_data
+
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
-    list_display = ('id', 'outlet', 'customer', 'source', 'status', 'booking_start', 'booking_end')
+    form = BookingAdminForm
+    list_display = ('booking_code', 'id', 'outlet', 'customer', 'source', 'status', 'booking_start', 'booking_end')
     list_filter = ('status', 'source', 'outlet')
-    search_fields = ('id', 'customer__name', 'customer__phone_e164')
-    readonly_fields = ('deleted_at',)
+    search_fields = ('booking_code', 'id', 'customer__name', 'customer__phone_e164')
+    readonly_fields = ('booking_code', 'deleted_at', 'cancelled_at')
     inlines = [AppointmentSlotInline]
+    actions = ['cancel_bookings']
+
+    def save_model(self, request, obj, form, change):
+        if obj.status == 'cancelled':
+            if not obj.cancelled_at:
+                obj.cancelled_at = timezone.now()
+            if not obj.cancellation_reason:
+                actor = request.user.get_full_name() or request.user.email
+                obj.cancellation_reason = f"Cancelled by {actor} via Django Admin"
+        super().save_model(request, obj, form, change)
+        if obj.status == 'cancelled':
+            obj.slots.filter(status__in=['scheduled', 'started']).update(status='cancelled')
+
+    @admin.action(description="Cancel selected bookings (synchronizes slots & timestamps)")
+    def cancel_bookings(self, request, queryset):
+        now = timezone.now()
+        actor = request.user.get_full_name() or request.user.email
+        reason = f"Bulk cancelled by {actor} via Django Admin"
+        count = 0
+        for booking in queryset:
+            booking.status = 'cancelled'
+            booking.cancelled_at = now
+            booking.cancellation_reason = reason
+            booking.save()
+            booking.slots.filter(status__in=['scheduled', 'started']).update(status='cancelled')
+            count += 1
+        self.message_user(request, f"{count} booking(s) and their associated slots have been cancelled.", messages.SUCCESS)
+
 @admin.register(AppointmentSlot)
 class AppointmentSlotAdmin(admin.ModelAdmin):
+    def has_add_permission(self, request):
+        return False
+
     list_display = (
         'booking', 'store_service', 'professional',
         'slot_start', 'actual_start_time', 'start_variance_display',
@@ -623,7 +735,11 @@ class CommissionAccrualAdmin(admin.ModelAdmin):
     list_display = ('professional', 'invoice_line', 'base_paise', 'commission_paise', 'created_at')
     search_fields = ('professional__display_name',)
     readonly_fields = ('id', 'invoice_line', 'professional', 'base_paise', 'commission_paise', 'created_at')
+    def has_add_permission(self, request):
+        return False
     def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
         return False
 @admin.register(CreditNote)
 class CreditNoteAdmin(admin.ModelAdmin):
@@ -660,7 +776,11 @@ class StockMovementAdmin(admin.ModelAdmin):
     list_filter = ('product',)
     search_fields = ('product__name', 'invoice__invoice_number')
     readonly_fields = ('id', 'product', 'invoice', 'quantity_deducted', 'reason', 'created_at')
+    def has_add_permission(self, request):
+        return False
     def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
         return False
 class CampaignSendInline(admin.TabularInline):
     model = CampaignSend
@@ -694,6 +814,12 @@ class CustomerConsentAdmin(admin.ModelAdmin):
 class CustomerMergeLogAdmin(admin.ModelAdmin):
     list_display = ('surviving_customer_id', 'merged_customer_id', 'merged_by', 'created_at', 'reverted_at')
     search_fields = ('merged_by', 'surviving_customer_id', 'merged_customer_id')
+    def has_add_permission(self, request):
+        return False
+    def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
+        return False
 @admin.register(CustomerFavourite)
 class CustomerFavouriteAdmin(admin.ModelAdmin):
     list_display = ('customer', 'store', 'professional_account', 'created_at')
@@ -706,6 +832,12 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_filter = ('actor_type', 'action', 'entity_type')
     search_fields = ('actor_id', 'entity_id', 'action')
     readonly_fields = ('id', 'actor_id', 'actor_type', 'action', 'entity_type', 'entity_id', 'before', 'after', 'ip_address', 'created_at')
+    def has_add_permission(self, request):
+        return False
+    def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
+        return False
 @admin.register(ImpersonationSession)
 class ImpersonationSessionAdmin(admin.ModelAdmin):
     list_display = ('id', 'internal_user_id', 'store_group_id', 'mode', 'reason', 'started_at', 'ended_at')
@@ -726,18 +858,18 @@ def custom_get_app_list(request, app_label=None):
             'Plans', 'Access codes', 'Access code redemptions'
         ],
         '💇‍♀️ 4. Master Service Taxonomy & Moderation': [
-            'Service category phase1s', 'Canonical services',
+            'Master service categories', 'Canonical services',
             'Store services', 'Store service outlet overrides'
         ],
         '🌍 5. Global Customer & Consent Governance': [
             'Global customers', 'Customer store links', 'Customer consents', 'Customer merge logs', 'Customer favourites'
         ],
         '📊 6. Store ERP & Daily Branch Operations': [
-            'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Expenses', 'Staff incentives',
+            'Bookings', 'Appointment slots', 'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Expenses', 'Staff incentives',
             'Online payments', 'Queue entries', 'Slot holds',
         ],
         '👥 7. Store Staff & Legacy CRM': [
-            'Users', 'Staff availabilities', 'Membership tiers', 'Customer memberships', 'Coupons'
+            'Users', 'Staff availability', 'Membership tiers', 'Customer memberships', 'Coupons'
         ],
         '📜 8. Universal Audit Trail & Governance': [
             'Audit logs', 'Platform Settings'
