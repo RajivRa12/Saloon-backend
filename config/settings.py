@@ -16,6 +16,7 @@ if not DEBUG and SECRET_KEY == DEFAULT_INSECURE_SECRET:
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('ALLOWED_HOSTS', '*').split(',') if h.strip()]
 CSRF_TRUSTED_ORIGINS = [
     'https://api.sancharitribe.com',
+    'https://web.sancharitribe.com',
     'https://store.sancharitribe.com',
     'https://sancharitribe.com',
     'https://os44ok800w8kkkkks4wwcs0s.93.127.185.74.sslip.io',
@@ -201,6 +202,7 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOWED_ORIGINS = [
     'https://sancharitribe.com',
+    'https://web.sancharitribe.com',
     'https://api.sancharitribe.com',
     'https://store.sancharitribe.com',
     'https://os44ok800w8kkkkks4wwcs0s.93.127.185.74.sslip.io',
@@ -209,6 +211,9 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:3000',
     'http://127.0.0.1:8000',
     'http://127.0.0.1:8080',
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.sancharitribe\.com$",
 ]
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + ['x-store-id', 'x-impersonation-token']
@@ -219,7 +224,8 @@ BOOKING_AUTO_ASSIGN_STRATEGY = 'fewest_bookings_today'
 BOOKING_OVERRIDE_TOKEN_MAX_AGE_SECONDS = 600
 SECURE_CROSS_ORIGIN_OPENER_POLICY = None
 
-# Security Headers & Cookie Hardening
+# Reverse Proxy SSL & Security Headers
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
@@ -228,7 +234,8 @@ SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = False
 
 if not DEBUG:
-    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1')
+    # Reverse proxy (Nginx / Cloudflare / Coolify) handles SSL termination & HTTPS redirect
+    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'False').lower() in ('true', '1')
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 31536000
