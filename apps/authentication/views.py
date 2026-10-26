@@ -7,6 +7,7 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -33,6 +34,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
 class ChangePasswordView(APIView):
     """Shared account action for any authenticated role (customer, staff,
     therapist) — distinct from apps.store_erp's ERP-scoped equivalent, which
@@ -71,6 +74,8 @@ def _hash_otp(phone_e164, code):
 class RequestOTPView(APIView):
     """Phone-is-the-account: no signup form, no password. Customer app rule 26."""
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp'
     def post(self, request):
         phone = request.data.get('phone')
         if not phone:
@@ -101,15 +106,23 @@ class RequestOTPView(APIView):
         try:
             send_otp_sms(phone_e164, code)
         except SMSNotConfigured:
-            print(f"[OTP] {phone_e164} -> {code} (expires in {OTP_TTL_MINUTES}m)")
-            payload["dev_otp"] = code
+            if settings.DEBUG:
+                print(f"[OTP] {phone_e164} -> {code} (expires in {OTP_TTL_MINUTES}m)")
+                payload["dev_otp"] = code
+            else:
+                return Response({"message": "SMS delivery service is currently unavailable."}, status=503)
         except SMSDeliveryError as e:
-            print(f"[SMS FAILED] Falling back to dev_otp. Error: {e}")
-            payload["dev_otp"] = code
+            if settings.DEBUG:
+                print(f"[SMS FAILED] Falling back to dev_otp. Error: {e}")
+                payload["dev_otp"] = code
+            else:
+                return Response({"message": "Failed to deliver SMS. Please try again later."}, status=502)
             
         return Response(payload, status=200)
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
     def post(self, request):
         phone = request.data.get('phone')
         code = (request.data.get('code') or '').strip()

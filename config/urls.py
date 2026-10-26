@@ -2,8 +2,10 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+import os
+admin_path = os.environ.get('DJANGO_ADMIN_URL', 'admin/').strip('/') + '/'
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path(admin_path, admin.site.urls),
     path('api/auth/', include('apps.authentication.urls')),
     path('api/v1/', include('apps.master_admin.urls')),
     path('api/master/', include('apps.master_admin.urls')),

@@ -20,7 +20,32 @@ from .serializers import (
 from .permissions import IsStoreStaff, IsStoreManagerOrReceptionist, IsErpUser, IsBrandOwner, RequiresCRM, RequiresAnalytics
 def get_request_outlet(request):
     from apps.core.models import Outlet
+    user = getattr(request, 'user', None)
     outlet_id = getattr(request, 'data', {}).get('outlet_id') or getattr(request, 'query_params', {}).get('outlet_id')
+    
+    # Row-Level Security: Restrict outlet selection strictly to authenticated user's organization
+    if user and user.is_authenticated:
+        if user.is_superuser:
+            allowed = Outlet.objects.all()
+        elif getattr(user, 'outlet_id', None):
+            allowed = Outlet.objects.filter(id=user.outlet_id)
+        elif getattr(user, 'store', None) and getattr(user.store, 'outlet_id', None):
+            outlet_obj = user.store.outlet
+            if outlet_obj and outlet_obj.store_group_id:
+                allowed = Outlet.objects.filter(store_group_id=outlet_obj.store_group_id)
+            else:
+                allowed = Outlet.objects.filter(id=user.store.outlet_id)
+        elif getattr(user, 'brand_id', None):
+            allowed = Outlet.objects.filter(legacy_stores__brand_id=user.brand_id)
+        else:
+            allowed = Outlet.objects.none()
+
+        if outlet_id and allowed.filter(id=outlet_id).exists():
+            return allowed.filter(id=outlet_id).first()
+        fallback = allowed.first()
+        if fallback:
+            return fallback
+
     if outlet_id:
         out = Outlet.objects.filter(id=outlet_id).first()
         if out:

@@ -1,10 +1,29 @@
 from pathlib import Path
 import os
 BASE_DIR = Path(__file__).resolve().parent.parent
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-gcaz)x)()re4ubw+)qro1wx_ymnk%cx(&2=h2pbs$4y92v=qg^')
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
-CSRF_TRUSTED_ORIGINS = ['https://api.sancharitribe.com', 'https://os44ok800w8kkkkks4wwcs0s.93.127.185.74.sslip.io']
+DEFAULT_INSECURE_SECRET = 'django-insecure-gcaz)x)()re4ubw+)qro1wx_ymnk%cx(&2=h2pbs$4y92v=qg^'
+SECRET_KEY = os.environ.get('SECRET_KEY', DEFAULT_INSECURE_SECRET)
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'development')
+DEBUG = os.environ.get('DEBUG', 'True' if ENVIRONMENT == 'development' else 'False').lower() in ('true', '1', 'yes')
+
+if not DEBUG and SECRET_KEY == DEFAULT_INSECURE_SECRET:
+    import warnings
+    warnings.warn(
+        "CRITICAL SECURITY ALERT: Running in production with the default template SECRET_KEY! "
+        "Define SECRET_KEY in your production environment variables to protect JWT token signing.",
+        RuntimeWarning
+    )
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('ALLOWED_HOSTS', '*').split(',') if h.strip()]
+CSRF_TRUSTED_ORIGINS = [
+    'https://api.sancharitribe.com',
+    'https://store.sancharitribe.com',
+    'https://sancharitribe.com',
+    'https://os44ok800w8kkkkks4wwcs0s.93.127.185.74.sslip.io',
+    'http://localhost:3000',
+    'http://localhost:8080',
+    'http://127.0.0.1:8000',
+    'http://localhost:8000',
+]
 RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', '')
 RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', '')
 MESSAGE_CENTRAL_CUSTOMER_ID = os.environ.get('MESSAGE_CENTRAL_CUSTOMER_ID', '')
@@ -144,6 +163,16 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '120/minute',
+        'user': '600/minute',
+        'auth': '20/minute',
+        'otp': '5/minute',
+    },
 }
 from datetime import timedelta
 SIMPLE_JWT = {
@@ -169,7 +198,18 @@ SIMPLE_JWT = {
     'TOKEN_USER_CLASS': 'rest_framework_simplejwt.models.TokenUser',
     'JTI_CLAIM': 'jti',
 }
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS = [
+    'https://sancharitribe.com',
+    'https://api.sancharitribe.com',
+    'https://store.sancharitribe.com',
+    'https://os44ok800w8kkkkks4wwcs0s.93.127.185.74.sslip.io',
+    'http://localhost:3000',
+    'http://localhost:8080',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:8000',
+    'http://127.0.0.1:8080',
+]
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + ['x-store-id', 'x-impersonation-token']
 import os
@@ -178,3 +218,20 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 BOOKING_AUTO_ASSIGN_STRATEGY = 'fewest_bookings_today'
 BOOKING_OVERRIDE_TOKEN_MAX_AGE_SECONDS = 600
 SECURE_CROSS_ORIGIN_OPENER_POLICY = None
+
+# Security Headers & Cookie Hardening
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+SECURE_REFERRER_POLICY = 'same-origin'
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = False
+
+if not DEBUG:
+    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+

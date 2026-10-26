@@ -1315,7 +1315,12 @@ class KycDocument(models.Model):
     store_group = models.ForeignKey(StoreGroup, on_delete=models.CASCADE, related_name='kyc_documents')
     doc_type = models.CharField(max_length=20, choices=KycDocType.choices)
     file_url = models.URLField(max_length=500, blank=True, null=True, help_text="Signed URL for cloud storage")
-    file = models.FileField(upload_to='kyc_documents/', null=True, blank=True, help_text="Uploaded document file")
+    file = models.FileField(
+        upload_to='kyc_documents/',
+        null=True,
+        blank=True,
+        help_text="Uploaded document file (PDF, JPG, PNG up to 10MB)"
+    )
     uploaded_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=KycDocStatus.choices, default=KycDocStatus.PENDING)
     reviewed_by = models.CharField(max_length=255, null=True, blank=True, help_text="Internal user reviewer")
@@ -1324,6 +1329,15 @@ class KycDocument(models.Model):
     class Meta:
         db_table = 'kyc_document'
         ordering = ['-uploaded_at']
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        if self.file and hasattr(self.file, 'name') and self.file.name:
+            ext = self.file.name.rsplit('.', 1)[-1].lower()
+            if ext not in ['pdf', 'jpg', 'jpeg', 'png']:
+                raise ValidationError({'file': f"Unsupported file type (.{ext}). Allowed formats: PDF, JPG, PNG."})
+            if hasattr(self.file, 'size') and self.file.size > 10 * 1024 * 1024:
+                raise ValidationError({'file': "File size cannot exceed 10MB."})
     def __str__(self):
         return f"{self.store_group.name} - {self.doc_type} ({self.status})"
     @property
