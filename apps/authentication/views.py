@@ -136,7 +136,7 @@ class VerifyOTPView(APIView):
     throttle_scope = 'auth'
     def post(self, request):
         phone = request.data.get('phone')
-        code = (request.data.get('code') or '').strip()
+        code = (request.data.get('code') or request.data.get('otp') or '').strip()
         if not phone or not code:
             return Response({"message": "phone and code are required."}, status=400)
         phone_e164 = normalize_e164(phone)
