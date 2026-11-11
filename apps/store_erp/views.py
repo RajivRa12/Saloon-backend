@@ -1398,9 +1398,15 @@ class BookingViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'head']
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser or user.role == Role.MASTER_ADMIN or getattr(user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']:
+        if (
+            user.is_superuser or
+            user.role in [Role.MASTER_ADMIN, Role.ADMIN, Role.STORE_ADMIN] or
+            getattr(user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']
+        ):
             return Booking.objects.all().order_by('-created_at').prefetch_related('slots')
-        return Booking.objects.filter(outlet_id=user.outlet_id).order_by('-created_at').prefetch_related('slots')
+        if user.outlet_id:
+            return Booking.objects.filter(outlet_id=user.outlet_id).order_by('-created_at').prefetch_related('slots')
+        return Booking.objects.all().order_by('-created_at').prefetch_related('slots')
     def get_serializer_class(self):
         return BookingCreateSerializer if self.action == 'create' else BookingSerializer
     def create(self, request, *args, **kwargs):

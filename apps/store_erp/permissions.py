@@ -69,7 +69,11 @@ class IsOutletStaff(BasePermission):
         if imp_status is not None:
             return imp_status
         resolve_brand_owner_store(request)
-        if request.user and request.user.is_authenticated and (request.user.is_superuser or request.user.role == Role.MASTER_ADMIN or getattr(request.user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']):
+        if request.user and request.user.is_authenticated and (
+            request.user.is_superuser or
+            request.user.role in [Role.MASTER_ADMIN, Role.ADMIN, Role.STORE_ADMIN] or
+            getattr(request.user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']
+        ):
             return True
         return bool(
             request.user and

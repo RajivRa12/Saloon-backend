@@ -278,14 +278,59 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
     has_review = serializers.SerializerMethodField()
     store_id = serializers.SerializerMethodField()
     payment = serializers.SerializerMethodField()
+    amount = serializers.SerializerMethodField()
+    slot_time = serializers.SerializerMethodField()
+    service_name = serializers.SerializerMethodField()
+    therapist_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Booking
         fields = [
             'id', 'booking_code', 'outlet', 'outlet_name', 'status', 'booking_start', 'booking_end', 'slots', 'has_review', 'store_id',
             'is_home_service', 'service_address', 'on_the_way_at', 'therapist_lat', 'therapist_lng', 'location_updated_at',
-            'payment',
+            'payment', 'amount', 'slot_time', 'service_name', 'therapist_name',
         ]
         read_only_fields = fields
+
+    def get_amount(self, obj):
+        payment = getattr(obj, 'online_payment', None)
+        if payment and payment.total_amount_paise:
+            return round(float(payment.total_amount_paise) / 100, 2)
+        from apps.core.models import AppointmentSlotStatus
+        active_slots = obj.slots.exclude(status=AppointmentSlotStatus.CANCELLED)
+        if not active_slots.exists():
+            active_slots = obj.slots.all()
+        total_paise = sum(s.price_paise for s in active_slots if s.price_paise)
+        if total_paise:
+            return round(float(total_paise) / 100, 2)
+        return 0.0
+
+    def get_slot_time(self, obj):
+        if obj.booking_start:
+            try:
+                import zoneinfo
+                kolkata_tz = zoneinfo.ZoneInfo('Asia/Kolkata')
+                dt = obj.booking_start.astimezone(kolkata_tz)
+                return dt.strftime('%I:%M %p')
+            except Exception:
+                from django.utils import timezone
+                dt = timezone.localtime(obj.booking_start)
+                return dt.strftime('%I:%M %p')
+        return "11:30 AM"
+
+    def get_service_name(self, obj):
+        from apps.core.models import AppointmentSlotStatus
+        active_slots = obj.slots.exclude(status=AppointmentSlotStatus.CANCELLED)
+        if not active_slots.exists():
+            active_slots = obj.slots.all()
+        names = [s.store_service.name for s in active_slots if s.store_service and s.store_service.name]
+        return " + ".join(names) if names else "Salon Service"
+
+    def get_therapist_name(self, obj):
+        first = obj.slots.first()
+        if first and first.professional:
+            return getattr(first.professional, 'display_name', None) or getattr(first.professional, 'name', None)
+        return None
     def get_slots(self, obj):
         from apps.core.models import AppointmentSlotStatus
         active_slots = obj.slots.exclude(status=AppointmentSlotStatus.CANCELLED)

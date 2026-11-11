@@ -890,7 +890,14 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
 
             duration = int(request.data.get('duration_minutes') or svc.canonical_service.default_duration_min if (svc and hasattr(svc, 'canonical_service') and svc.canonical_service) else 45)
             slot_end = slot_start + timedelta(minutes=duration)
-            price_paise = int(svc.default_price_paise) if svc else int(float(request.data.get('amount') or 500) * 100)
+            req_amt = request.data.get('amount')
+            if req_amt is not None and str(req_amt).strip() != '':
+                try:
+                    price_paise = int(round(float(req_amt) * 100))
+                except (ValueError, TypeError):
+                    price_paise = int(svc.default_price_paise) if svc else 50000
+            else:
+                price_paise = int(svc.default_price_paise) if svc else 50000
 
             prof = Professional.objects.filter(outlet=outlet, is_bookable=True).first() if outlet else None
             if not prof:
