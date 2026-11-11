@@ -162,7 +162,7 @@ def notify_variance_stakeholders(slot, action_type, diff_minutes, is_variance, r
                     }
                 )
 
-        outlet = slot.outlet or (slot.booking.outlet if slot.booking else None)
+        outlet = getattr(slot, 'outlet', None) or (slot.booking.outlet if slot.booking else None)
         if outlet:
             store_staff = User.objects.filter(
                 role__in=[Role.STORE_ADMIN, Role.RECEPTIONIST, Role.BRAND_OWNER]

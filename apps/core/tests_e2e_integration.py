@@ -50,27 +50,34 @@ class EndToEndIntegrationTestSuite(APITestCase):
             contact_number="+919800000000",
         )
 
-        self.category = ServiceCategoryPhase1.objects.create(name="Hair Styling", slug="hair-styling", is_active=True)
-        self.canonical_service = CanonicalService.objects.create(
-            category=self.category,
-            name="Blow Dry & Styling",
-            slug="blow-dry-styling",
-            default_duration_min=45,
-            buffer_before_min=0,
-            buffer_after_min=10,
-            resource_type="chair",
-            gender_applicability="women",
-            skill_tag="stylist",
-            is_active=True,
+        self.category, _ = ServiceCategoryPhase1.objects.get_or_create(
+            slug="hair-styling-test",
+            defaults={'name': "Hair Styling Test", 'is_active': True}
         )
-        self.store_service = StoreService.objects.create(
+        self.canonical_service, _ = CanonicalService.objects.get_or_create(
+            slug="blow-dry-styling-test",
+            defaults={
+                'category': self.category,
+                'name': "Blow Dry & Styling Test",
+                'default_duration_min': 45,
+                'buffer_before_min': 0,
+                'buffer_after_min': 10,
+                'resource_type': "chair",
+                'gender_applicability': "women",
+                'skill_tag': "stylist",
+                'is_active': True,
+            }
+        )
+        self.store_service, _ = StoreService.objects.get_or_create(
             store_group=self.store_group,
             canonical_service=self.canonical_service,
-            name="Blow Dry & Styling",
-            default_price_paise=150000,
-            duration_min=45,
-            is_active_in_store=True,
-            marketplace_status=StoreServiceMarketplaceStatus.APPROVED,
+            defaults={
+                'name': "Blow Dry & Styling Test",
+                'default_price_paise': 150000,
+                'duration_min': 45,
+                'is_active_in_store': True,
+                'marketplace_status': StoreServiceMarketplaceStatus.APPROVED,
+            }
         )
 
         self.resource = Resource.objects.create(
@@ -141,7 +148,7 @@ class EndToEndIntegrationTestSuite(APITestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res.data['data']), 1)
-        self.assertEqual(res.data['data'][0]['name'], "Blow Dry & Styling")
+        self.assertEqual(res.data['data'][0]['name'], "Blow Dry & Styling Test")
 
         target_date = timezone.now().date() + dt.timedelta(days=1)
         slot_start = timezone.make_aware(dt.datetime.combine(target_date, dt.time(10, 0)))
@@ -186,6 +193,7 @@ class EndToEndIntegrationTestSuite(APITestCase):
 
         start_res = self.client.post(
             f"/api/therapist/schedule/{slot_id}/start/",
+            {'reason': 'Client arrived early'},
             format='json',
             HTTP_AUTHORIZATION=f"Bearer {pro_token}"
         )
@@ -197,6 +205,7 @@ class EndToEndIntegrationTestSuite(APITestCase):
 
         complete_res = self.client.post(
             f"/api/therapist/schedule/{slot_id}/complete/",
+            {'reason': 'Service completed normally'},
             format='json',
             HTTP_AUTHORIZATION=f"Bearer {pro_token}"
         )

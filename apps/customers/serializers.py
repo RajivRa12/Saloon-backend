@@ -34,9 +34,19 @@ class PublicStoreSerializer(serializers.ModelSerializer):
     slug = serializers.SerializerMethodField()
     avg_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
+    city = serializers.SerializerMethodField()
+    zone = serializers.SerializerMethodField()
     class Meta:
         model = Store
-        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email', 'has_online_booking', 'working_hours', 'is_premium_listing', 'slug', 'avg_rating', 'review_count']
+        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email', 'has_online_booking', 'working_hours', 'is_premium_listing', 'slug', 'avg_rating', 'review_count', 'city', 'zone']
+    def get_city(self, obj):
+        if obj.outlet and obj.outlet.city:
+            return obj.outlet.city.name
+        return None
+    def get_zone(self, obj):
+        if obj.outlet and obj.outlet.zone:
+            return obj.outlet.zone.name
+        return None
     def get_has_online_booking(self, obj):
         return obj.outlet_id is not None
     def get_slug(self, obj):
@@ -271,7 +281,7 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = [
-            'id', 'outlet', 'outlet_name', 'status', 'booking_start', 'booking_end', 'slots', 'has_review', 'store_id',
+            'id', 'booking_code', 'outlet', 'outlet_name', 'status', 'booking_start', 'booking_end', 'slots', 'has_review', 'store_id',
             'is_home_service', 'service_address', 'on_the_way_at', 'therapist_lat', 'therapist_lng', 'location_updated_at',
             'payment',
         ]

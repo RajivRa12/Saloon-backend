@@ -19,6 +19,7 @@ env/
 *.db
 *.log
 logs/
+backups/
 error.html
 test-results/
 

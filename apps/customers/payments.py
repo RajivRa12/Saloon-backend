@@ -24,6 +24,16 @@ def verify_payment(order_id, payment_id, signature):
         })
     except razorpay.errors.SignatureVerificationError:
         raise PaymentVerificationError("Payment verification failed.")
+def verify_webhook(body_bytes, signature):
+    secret = getattr(settings, 'RAZORPAY_WEBHOOK_SECRET', '')
+    if not secret:
+        raise PaymentsNotConfigured("RAZORPAY_WEBHOOK_SECRET is not configured.")
+    import razorpay
+    client = _client()
+    try:
+        client.utility.verify_webhook_signature(body_bytes, signature, secret)
+    except razorpay.errors.SignatureVerificationError:
+        raise PaymentVerificationError("Razorpay webhook signature verification failed.")
 def refund_payment(payment_id):
     client = _client()
     client.payment.refund(payment_id, {})

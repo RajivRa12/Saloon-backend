@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import sys
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INSECURE_SECRET = 'django-insecure-gcaz)x)()re4ubw+)qro1wx_ymnk%cx(&2=h2pbs$4y92v=qg^'
 SECRET_KEY = os.environ.get('SECRET_KEY', DEFAULT_INSECURE_SECRET)
@@ -27,6 +28,7 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', '')
 RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', '')
+RAZORPAY_WEBHOOK_SECRET = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '')
 MESSAGE_CENTRAL_CUSTOMER_ID = os.environ.get('MESSAGE_CENTRAL_CUSTOMER_ID', '')
 MESSAGE_CENTRAL_AUTH_TOKEN = os.environ.get('MESSAGE_CENTRAL_AUTH_TOKEN', '')
 MESSAGE_CENTRAL_SENDER_ID = os.environ.get('MESSAGE_CENTRAL_SENDER_ID', 'NRBYME')
@@ -101,6 +103,14 @@ else:
             'PASSWORD': os.environ.get('DB_PASS', ''),
             'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
             'PORT': os.environ.get('DB_PORT', '5432'),
+        }
+    }
+
+if 'test' in sys.argv and not os.environ.get('USE_POSTGRES_TEST_DB'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
         }
     }
 AUTH_PASSWORD_VALIDATORS = [
@@ -214,6 +224,7 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.sancharitribe\.com$",
+    r"^https://.*\.vercel\.app$",
 ]
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + ['x-store-id', 'x-impersonation-token']

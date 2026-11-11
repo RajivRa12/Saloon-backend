@@ -59,3 +59,20 @@ def mirror_admin_log_to_audit_log(sender, instance, created, **kwargs):
     except Exception:
         pass
 
+from django.db.models.signals import post_migrate
+
+@receiver(post_migrate)
+def auto_seed_pilot_salon_if_empty(sender, **kwargs):
+    """Automatically seeds the default pilot salon if no active store exists in the DB,
+    so deploying to a fresh database requires zero manual command execution."""
+    if sender.name != 'apps.core':
+        return
+    try:
+        from .models import Store
+        if not Store.objects.filter(status='ACTIVE').exists():
+            from django.core.management import call_command
+            call_command('setup_pilot_salon')
+    except Exception:
+        pass
+
+

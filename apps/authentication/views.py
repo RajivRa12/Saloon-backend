@@ -1,4 +1,6 @@
 import hashlib
+import logging
+import os
 import random
 from datetime import timedelta
 from django.conf import settings
@@ -15,6 +17,7 @@ from django.contrib.auth import get_user_model
 from apps.core.models import PhoneOTP, Role, normalize_e164
 from .serializers import RegisterSerializer, UserSerializer
 User = get_user_model()
+logger = logging.getLogger(__name__)
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = User.USERNAME_FIELD
     def validate(self, attrs):
@@ -69,6 +72,9 @@ class RegisterView(generics.CreateAPIView):
 OTP_TTL_MINUTES = 5
 OTP_RESEND_COOLDOWN_SECONDS = 30
 MAX_OTP_ATTEMPTS = 5
+PILOT_MODE = os.environ.get('PILOT_MODE', 'True').lower() in ('true', '1', 'yes')
+PILOT_DEMO_OTP = os.environ.get('PILOT_DEMO_OTP', '123456')
+
 def _hash_otp(phone_e164, code):
     return hashlib.sha256(f"{phone_e164}:{code}:{settings.SECRET_KEY}".encode()).hexdigest()
 class RequestOTPView(APIView):
@@ -87,8 +93,10 @@ class RequestOTPView(APIView):
             return Response({"message": f"Please wait {wait}s before requesting another code."}, status=429)
         code = f"{random.randint(0, 999999):06d}"
         
-        if phone_e164 == "+919999999999":
-            code = "123456"
+        # In Pilot mode, any real customer phone number can log in with PILOT_DEMO_OTP (123456)
+        # without requiring a paid SMS gateway. When PILOT_MODE=False, real SMS is dispatched.
+        if PILOT_MODE:
+            code = PILOT_DEMO_OTP
 
         PhoneOTP.objects.create(
             phone_e164=phone_e164,
@@ -97,21 +105,30 @@ class RequestOTPView(APIView):
         )
 
         payload = {"phone": phone_e164, "expires_in": OTP_TTL_MINUTES * 60}
-        
-        if phone_e164 == "+919999999999":
-            payload["dev_otp"] = code
+
+        if PILOT_MODE:
+            if settings.DEBUG:
+                payload["dev_otp"] = code
             return Response(payload, status=200)
 
         from .sms import send_otp_sms, SMSNotConfigured, SMSDeliveryError
         try:
             send_otp_sms(phone_e164, code)
         except SMSNotConfigured:
-            print(f"[OTP] {phone_e164} -> {code} (expires in {OTP_TTL_MINUTES}m)")
-            payload["dev_otp"] = code
+            if settings.DEBUG:
+                print(f"[OTP DEV] {phone_e164} -> {code} (expires in {OTP_TTL_MINUTES}m)")
+                payload["dev_otp"] = code
+                return Response(payload, status=200)
+            logger.error("SMS service is not configured in production.")
+            return Response({"message": "SMS delivery service is not configured. Please contact support."}, status=503)
         except SMSDeliveryError as e:
-            print(f"[SMS FAILED] Falling back to dev_otp. Error: {e}")
-            payload["dev_otp"] = code
-            
+            if settings.DEBUG:
+                print(f"[SMS FAILED DEV] Falling back to dev_otp in DEBUG mode. Error: {e}")
+                payload["dev_otp"] = code
+                return Response(payload, status=200)
+            logger.error(f"Failed to send SMS to {phone_e164}: {e}")
+            return Response({"message": "Failed to deliver OTP SMS. Please try again in a moment."}, status=502)
+
         return Response(payload, status=200)
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
