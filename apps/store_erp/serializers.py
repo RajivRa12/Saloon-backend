@@ -505,9 +505,10 @@ class AppointmentSlotSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 class BookingSerializer(serializers.ModelSerializer):
     slots = AppointmentSlotSerializer(many=True, read_only=True)
-    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_name = serializers.SerializerMethodField()
     booked_by_name = serializers.SerializerMethodField()
     payment = serializers.SerializerMethodField()
+
     class Meta:
         model = Booking
         fields = [
@@ -516,6 +517,15 @@ class BookingSerializer(serializers.ModelSerializer):
             'created_at', 'cancelled_at', 'cancellation_reason', 'slots', 'payment',
         ]
         read_only_fields = ['status', 'booked_by', 'created_at', 'cancelled_at', 'cancellation_reason']
+
+    def get_customer_name(self, obj):
+        if not obj.customer:
+            return "Walk-in"
+        name = getattr(obj.customer, 'name', '') or ''
+        phone = getattr(obj.customer, 'phone_e164', '') or ''
+        if not name or '@phone.nearbyme.local' in name:
+            return phone if phone else (name.split('@')[0] if name else "Customer")
+        return f"{name} ({phone})" if phone and phone not in name else name
     def get_booked_by_name(self, obj):
         if obj.booked_by:
             return obj.booked_by.get_full_name() or obj.booked_by.email
