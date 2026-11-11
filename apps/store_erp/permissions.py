@@ -71,7 +71,8 @@ class IsOutletStaff(BasePermission):
         resolve_brand_owner_store(request)
         if request.user and request.user.is_authenticated and (
             request.user.is_superuser or
-            request.user.role in [Role.MASTER_ADMIN, Role.ADMIN, Role.STORE_ADMIN] or
+            request.user.is_staff or
+            request.user.role in [Role.MASTER_ADMIN, Role.STORE_ADMIN, 'ADMIN'] or
             getattr(request.user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']
         ):
             return True

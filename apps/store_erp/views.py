@@ -1400,7 +1400,8 @@ class BookingViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if (
             user.is_superuser or
-            user.role in [Role.MASTER_ADMIN, Role.ADMIN, Role.STORE_ADMIN] or
+            user.is_staff or
+            user.role in [Role.MASTER_ADMIN, Role.STORE_ADMIN, 'ADMIN'] or
             getattr(user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']
         ):
             return Booking.objects.all().order_by('-created_at').prefetch_related('slots')
