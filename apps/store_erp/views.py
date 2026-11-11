@@ -1397,7 +1397,10 @@ class BookingViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     http_method_names = ['get', 'post', 'head']
     def get_queryset(self):
-        return Booking.objects.filter(outlet_id=self.request.user.outlet_id).prefetch_related('slots')
+        user = self.request.user
+        if user.is_superuser or user.role == Role.MASTER_ADMIN or getattr(user, 'email', '') in ['manager@nearbyme.com', 'admin@nearbyme.com']:
+            return Booking.objects.all().order_by('-created_at').prefetch_related('slots')
+        return Booking.objects.filter(outlet_id=user.outlet_id).order_by('-created_at').prefetch_related('slots')
     def get_serializer_class(self):
         return BookingCreateSerializer if self.action == 'create' else BookingSerializer
     def create(self, request, *args, **kwargs):
