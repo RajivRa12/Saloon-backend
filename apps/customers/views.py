@@ -828,7 +828,12 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
             if service_id:
                 cleaned_svc = str(service_id).replace('svc-', '').strip()
                 if cleaned_svc.isdigit():
-                    svc = StoreService.objects.filter(id=int(cleaned_svc)).first()
+                    from apps.core.models import Service
+                    legacy_svc = Service.objects.filter(id=int(cleaned_svc)).first()
+                    if legacy_svc and outlet and outlet.store_group:
+                        svc = StoreService.objects.filter(store_group=outlet.store_group, name=legacy_svc.name).first()
+                    if not svc:
+                        svc = StoreService.objects.filter(id=int(cleaned_svc)).first()
                 else:
                     try:
                         import uuid

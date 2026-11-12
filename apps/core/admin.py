@@ -63,13 +63,90 @@ class BrandAdmin(admin.ModelAdmin):
     list_filter = ('status', 'business')
     search_fields = ('name', 'business__name')
     ordering = ('-created_at',)
+class StoreAdminForm(forms.ModelForm):
+    store_group = forms.ModelChoiceField(
+        queryset=StoreGroup.objects.all(),
+        required=False,
+        label="Store Group",
+        help_text="Select your Store Group here (e.g. 'The New Look Men’s Saloon Group') to automatically link it."
+    )
+    about = forms.CharField(
+        widget=forms.Textarea(attrs={'rows': 3}),
+        required=False,
+        label="About (Description)",
+        help_text="Tell customers about your salon, ambiance, specialties, and experience."
+    )
+    cover_image_url = forms.URLField(
+        required=False,
+        label="Store Cover Image URL",
+        help_text="Direct link to your salon hero photo (e.g. from Unsplash, Google Photos, or your website)."
+    )
+
+    class Meta:
+        model = Store
+        exclude = ('business', 'brand')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk:
+            if self.instance.outlet and self.instance.outlet.store_group:
+                self.fields['store_group'].initial = self.instance.outlet.store_group
+            profile = getattr(self.instance, 'public_profile', None)
+            if profile:
+                self.fields['about'].initial = profile.about
+                self.fields['cover_image_url'].initial = profile.cover_image_url
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        selected_group = self.cleaned_data.get('store_group')
+        if selected_group:
+            if not instance.outlet or instance.outlet.store_group != selected_group:
+                city = City.objects.filter(name__iexact='Bengaluru').first() or City.objects.first()
+                zone = Zone.objects.filter(city=city).first() if city else None
+                outlet, _ = Outlet.objects.get_or_create(
+                    store_group=selected_group,
+                    name=instance.name,
+                    defaults={
+                        'city': city,
+                        'zone': zone,
+                        'address_line': instance.address or 'City Center',
+                        'pincode': '560001',
+                        'phone': instance.contact_number or '+919876543210',
+                        'status': 'active',
+                        'opening_time': '09:00:00',
+                        'closing_time': '21:00:00',
+                    }
+                )
+                instance.outlet = outlet
+        if commit:
+            instance.save()
+            self.save_m2m()
+
+            # Save about and cover image to public profile
+            from django.utils.text import slugify
+            profile, _ = StorePublicProfile.objects.get_or_create(
+                store=instance,
+                defaults={'slug': slugify(instance.name) or f"store-{instance.id}"}
+            )
+            profile.about = self.cleaned_data.get('about') or ""
+            profile.cover_image_url = self.cleaned_data.get('cover_image_url') or None
+            profile.save()
+        return instance
+
 @admin.register(Store)
 class StoreAdmin(admin.ModelAdmin):
-    list_display = ('name', 'brand', 'business', 'contact_number', 'email', 'city_from_address', 'status', 'is_premium_listing', 'created_at')
-    list_filter = ('status', 'is_premium_listing', 'brand', 'business', 'currency', 'timezone')
+    form = StoreAdminForm
+    fields = ('name', 'store_group', 'outlet', 'contact_number', 'address', 'about', 'cover_image_url', 'status', 'working_hours', 'is_premium_listing')
+    list_display = ('name', 'get_store_group', 'contact_number', 'city_from_address', 'status', 'is_premium_listing', 'created_at')
+    list_filter = ('status', 'is_premium_listing', 'currency', 'timezone')
     list_editable = ('is_premium_listing',)
     search_fields = ('name', 'email', 'contact_number', 'address')
     ordering = ('-created_at',)
+
+    def get_store_group(self, obj):
+        return obj.outlet.store_group.name if obj.outlet and obj.outlet.store_group else "—"
+    get_store_group.short_description = 'Store Group'
+
     def city_from_address(self, obj):
         return obj.address[:30] + '...' if len(obj.address) > 30 else obj.address
     city_from_address.short_description = 'Address'
@@ -199,16 +276,78 @@ class CouponAdmin(admin.ModelAdmin):
     search_fields = ('code',)
     ordering = ('-created_at',)
 admin.site.register(User, CustomUserAdmin)
+class ServiceCategoryAdminForm(forms.ModelForm):
+    class Meta:
+        model = ServiceCategory
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.instance.pk and 'business' in self.fields:
+            first_biz = Business.objects.first()
+            if first_biz:
+                self.initial['business'] = first_biz
+
 @admin.register(ServiceCategory)
 class ServiceCategoryAdmin(admin.ModelAdmin):
+    form = ServiceCategoryAdminForm
     list_display = ('name', 'business', 'is_active', 'created_at')
     list_filter = ('is_active', 'business')
     search_fields = ('name',)
+
+class ServiceAdminForm(forms.ModelForm):
+    class Meta:
+        model = Service
+        fields = ('category', 'store_group', 'duration_minutes', 'price', 'is_home_service_available', 'is_premium_listing', 'is_active')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['category'].queryset = ServiceCategory.objects.all()
+        seen_names = set()
+        unique_choices = [('', '---------')]
+        for cat in ServiceCategory.objects.filter(is_active=True).order_by('name'):
+            if cat.name not in seen_names:
+                unique_choices.append((cat.id, cat.name))
+                seen_names.add(cat.name)
+        if self.instance and self.instance.pk and self.instance.category:
+            if self.instance.category.name not in seen_names:
+                unique_choices.append((self.instance.category.id, self.instance.category.name))
+        self.fields['category'].choices = unique_choices
+
+        self.fields['store_group'].queryset = StoreGroup.objects.all().order_by('name')
+        self.fields['store_group'].label = "Store group"
+        self.fields['store_group'].help_text = "Select which Store Group offers this service"
+
+        if self.instance and self.instance.pk and not self.instance.store_group:
+            if self.instance.category and self.instance.category.business:
+                sg = StoreGroup.objects.filter(name=self.instance.category.business.name).first()
+                if not sg:
+                    store = Store.objects.filter(business=self.instance.category.business).first()
+                    if store and store.outlet and store.outlet.store_group:
+                        sg = store.outlet.store_group
+                if sg:
+                    self.initial['store_group'] = sg
+        elif not self.instance.pk:
+            first_sg = StoreGroup.objects.filter(status='active').first() or StoreGroup.objects.first()
+            if first_sg:
+                self.initial['store_group'] = first_sg
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        if not instance.name and instance.category:
+            instance.name = instance.category.name
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
+
 @admin.register(Service)
 class ServiceAdmin(admin.ModelAdmin):
-    list_display = ('name', 'category', 'price', 'duration_minutes', 'is_active')
-    list_filter = ('is_active', 'category__business')
-    search_fields = ('name',)
+    form = ServiceAdminForm
+    list_display = ('name', 'category', 'store_group', 'price', 'duration_minutes', 'is_active')
+    list_filter = ('is_active', 'store_group', 'category')
+    search_fields = ('name', 'store_group__name', 'category__name')
+    fields = ('category', 'store_group', 'duration_minutes', 'price', 'is_home_service_available', 'is_premium_listing', 'is_active')
 @admin.register(StaffAvailability)
 class StaffAvailabilityAdmin(admin.ModelAdmin):
     list_display = ('staff', 'day_of_week', 'start_time', 'end_time', 'is_available')
@@ -300,8 +439,20 @@ class AccessCodeRedemptionAdmin(admin.ModelAdmin):
 class StoreGroupAdmin(admin.ModelAdmin):
     list_display = ('name', 'business_type', 'status', 'owner_name', 'owner_phone', 'created_at')
     list_filter = ('status', 'business_type')
-    search_fields = ('name', 'owner_name', 'owner_phone', 'legal_name')
+    search_fields = ('name', 'owner_name', 'owner_phone')
     readonly_fields = ('id', 'created_at', 'deleted_at')
+    fields = (
+        'name',
+        'owner_name',
+        'owner_phone',
+        'owner_email',
+        'business_type',
+        'status',
+        'gstin',
+        'pan',
+        'plan',
+        'access_code',
+    )
 @admin.register(StoreStatusHistory)
 class StoreStatusHistoryAdmin(admin.ModelAdmin):
     list_display = ('store_group', 'from_status', 'to_status', 'changed_by', 'changed_by_type', 'created_at')
@@ -502,6 +653,19 @@ class OutletAdmin(admin.ModelAdmin):
     list_filter = ('status', 'city')
     search_fields = ('name', 'store_group__name', 'phone')
     readonly_fields = ('id', 'created_at', 'deleted_at')
+    fields = (
+        'store_group',
+        'name',
+        'address_line',
+        'city',
+        'zone',
+        'pincode',
+        'phone',
+        'opening_time',
+        'closing_time',
+        'status',
+        'invoice_prefix',
+    )
     inlines = [
         OutletStaffInline, OutletAppointmentInline, OutletInvoiceInline,
         OutletProductInline, OutletVendorInline, OutletPurchaseOrderInline,

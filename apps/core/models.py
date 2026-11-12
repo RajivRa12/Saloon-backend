@@ -252,10 +252,11 @@ class ServiceCategory(models.Model):
         verbose_name_plural = "Service Categories"
         ordering = ['name']
     def __str__(self):
-        return f"{self.name} ({self.business.name})"
+        return self.name
 class Service(models.Model):
     category = models.ForeignKey(ServiceCategory, on_delete=models.CASCADE, related_name='services')
-    name = models.CharField(max_length=150)
+    store_group = models.ForeignKey('StoreGroup', on_delete=models.SET_NULL, null=True, blank=True, related_name='legacy_services', help_text="Store Group offering this service")
+    name = models.CharField(max_length=150, blank=True)
     duration_minutes = models.PositiveIntegerField(help_text="Duration in minutes")
     price = models.DecimalField(max_digits=10, decimal_places=2)
     is_home_service_available = models.BooleanField(default=False)
@@ -265,6 +266,34 @@ class Service(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         ordering = ['category', 'name']
+    def save(self, *args, **kwargs):
+        if not self.name and self.category:
+            self.name = self.category.name
+        if self.store_group and self.category:
+            biz = Business.objects.filter(name=self.store_group.name).first()
+            if not biz:
+                store = Store.objects.filter(outlet__store_group=self.store_group).first()
+                if store and store.business:
+                    biz = store.business
+            if not biz:
+                biz, _ = Business.objects.get_or_create(name=self.store_group.name)
+            
+            if self.category.business_id != biz.id:
+                cat, _ = ServiceCategory.objects.get_or_create(
+                    name=self.category.name,
+                    business=biz,
+                    defaults={'is_active': True}
+                )
+                self.category = cat
+        elif not self.store_group and self.category and self.category.business:
+            sg = StoreGroup.objects.filter(name=self.category.business.name).first()
+            if not sg:
+                store = Store.objects.filter(business=self.category.business).first()
+                if store and store.outlet and store.outlet.store_group:
+                    sg = store.outlet.store_group
+            if sg:
+                self.store_group = sg
+        super().save(*args, **kwargs)
     def __str__(self):
         return f"{self.name} - ₹{self.price} ({self.duration_minutes}m)"
 class StaffAvailability(models.Model):
@@ -1218,7 +1247,7 @@ class StoreGroup(SoftDeleteModel):
             self.owner_phone = normalize_e164(self.owner_phone)
         super().save(*args, **kwargs)
     def __str__(self):
-        return f"{self.name} [{self.status}]"
+        return self.name
 class AccessCodeRedemption(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     access_code = models.ForeignKey(AccessCode, on_delete=models.CASCADE, related_name='redemption_logs')
@@ -1274,6 +1303,18 @@ class Outlet(SoftDeleteModel):
     def save(self, *args, **kwargs):
         if self.phone:
             self.phone = normalize_e164(self.phone)
+        if (self.lat is None or self.lng is None) and self.city:
+            city_coords = {
+                'Bengaluru': (12.9716, 77.5946),
+                'Mumbai': (19.0760, 72.8777),
+                'Delhi': (28.7041, 77.1025),
+                'Hyderabad': (17.3850, 78.4867),
+            }
+            coords = city_coords.get(self.city.name, (12.9716, 77.5946))
+            if self.lat is None:
+                self.lat = coords[0]
+            if self.lng is None:
+                self.lng = coords[1]
         if not self.invoice_prefix:
             base = ''.join(ch for ch in self.name.upper() if ch.isalnum())[:4] or 'OUT'
             candidate = base
