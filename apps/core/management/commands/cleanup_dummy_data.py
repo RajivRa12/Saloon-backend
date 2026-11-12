@@ -3,7 +3,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from apps.core.models import (
     Store, StoreGroup, Outlet, ServiceCategory, Service,
-    Business, Brand, City, Zone, StorePublicProfile
+    Business, Brand, City, Zone, StorePublicProfile, CityMarketplaceFlag
 )
 
 logger = logging.getLogger(__name__)
@@ -44,13 +44,12 @@ class Command(BaseCommand):
         for sg in StoreGroup.objects.all():
             if not any(k.lower() in sg.name.lower() for k in KEEP_GROUP_NAMES):
                 self.stdout.write(f"Deleting dummy store group: {sg.name}")
-                # Delete any associated outlets
                 Outlet.objects.filter(store_group=sg).delete()
                 sg.delete()
 
         self.stdout.write(self.style.SUCCESS(f"✔ Deleted {deleted_stores_count} old dummy stores."))
 
-        # 2. Ensure Cities and Zones
+        # 2. Ensure Cities and Zones & Enable Marketplace Flag
         city, _ = City.objects.get_or_create(
             name="Bengaluru",
             defaults={"state": "Karnataka", "is_active": True}
@@ -59,13 +58,22 @@ class Command(BaseCommand):
             city.is_active = True
             city.save()
 
+        # CRITICAL: Flip marketplace flag to public so Bengaluru stores are visible in customer marketplace
+        CityMarketplaceFlag.objects.update_or_create(
+            city=city,
+            defaults={
+                "is_public": True,
+                "min_store_threshold": 1,
+                "enabled_at": timezone.now(),
+            }
+        )
+
         zones = ["JP Nagar", "Indiranagar", "Koramangala", "HSR Layout", "Whitefield", "Lavelle Road"]
         zone_map = {}
         for z_name in zones:
             z, _ = Zone.objects.get_or_create(city=city, name=z_name, defaults={"is_active": True})
             zone_map[z_name] = z
 
-        # 3. Setup Clean Store Groups
         working_hours_default = {
             "mon": "09:00-21:00",
             "tue": "09:00-21:00",
@@ -76,7 +84,7 @@ class Command(BaseCommand):
             "sun": "09:00-21:00",
         }
 
-        # Store Group 1: The New Look Men’s Saloon Group
+        # 3. Setup The New Look Men’s Saloon
         sg_newlook, _ = StoreGroup.objects.get_or_create(
             name="The New Look Men’s Saloon Group",
             defaults={
@@ -90,44 +98,47 @@ class Command(BaseCommand):
         sg_newlook.status = "active"
         sg_newlook.save()
 
-        # Business & Brand for New Look
         biz_newlook, _ = Business.objects.get_or_create(
             name="The New Look Men’s Saloon Group",
             defaults={
                 "business_type": "SALON",
                 "email": "owner@newlooksalon.in",
                 "phone": "+919731212730",
+                "address": "JP Nagar 7th Phase, Bengaluru",
+                "state": "Karnataka",
                 "city": "Bengaluru",
                 "status": "APPROVED",
             }
         )
         brand_newlook, _ = Brand.objects.get_or_create(
             name="The New Look Men’s Saloon",
-            defaults={"business": biz_newlook, "status": "APPROVED"}
+            business=biz_newlook,
+            defaults={"status": "APPROVED"}
         )
 
-        # Outlet 1: The New Look Men’s Saloon – JP Nagar
-        outlet_newlook, _ = Outlet.objects.get_or_create(
-            store_group=sg_newlook,
-            name="The New Look Men’s Saloon – JP Nagar",
-            defaults={
-                "city": city,
-                "zone": zone_map.get("JP Nagar"),
-                "address_line": "JP Nagar 7th Phase, Bengaluru",
-                "pincode": "560078",
-                "phone": "+919731212730",
-                "status": "active",
-                "opening_time": "09:00:00",
-                "closing_time": "21:00:00",
-                "lat": 12.9063,
-                "lng": 77.5857,
-            }
-        )
-        outlet_newlook.status = "active"
-        outlet_newlook.city = city
-        outlet_newlook.save()
+        outlet_newlook = Outlet.objects.filter(store_group=sg_newlook, name__icontains="New Look").first()
+        if not outlet_newlook:
+            outlet_newlook = Outlet.objects.create(
+                store_group=sg_newlook,
+                name="The New Look Men’s Saloon – JP Nagar",
+                city=city,
+                zone=zone_map.get("JP Nagar"),
+                address_line="JP Nagar 7th Phase, Bengaluru",
+                pincode="560078",
+                phone="+919731212730",
+                status="active",
+                opening_time="09:00:00",
+                closing_time="21:00:00",
+                invoice_prefix="NL01",
+                lat=12.9063,
+                lng=77.5857,
+            )
+        else:
+            outlet_newlook.city = city
+            outlet_newlook.zone = zone_map.get("JP Nagar")
+            outlet_newlook.status = "active"
+            outlet_newlook.save()
 
-        # Store 1: The New Look Men’s Saloon
         store_newlook, _ = Store.objects.get_or_create(
             name="The New Look Men’s Saloon",
             defaults={
@@ -138,17 +149,15 @@ class Command(BaseCommand):
                 "address": "JP Nagar 7th Phase, Bengaluru",
                 "status": "ACTIVE",
                 "working_hours": working_hours_default,
-                "has_online_booking": True,
                 "is_premium_listing": True,
             }
         )
         store_newlook.outlet = outlet_newlook
         store_newlook.status = "ACTIVE"
-        store_newlook.has_online_booking = True
         store_newlook.working_hours = working_hours_default
         store_newlook.save()
 
-        StorePublicProfile.objects.get_or_create(
+        StorePublicProfile.objects.update_or_create(
             store=store_newlook,
             defaults={
                 "slug": "the-new-look-mens-saloon",
@@ -158,7 +167,7 @@ class Command(BaseCommand):
             }
         )
 
-        # Store Group 2: Roots Mens Salon Alpha Group
+        # 4. Setup Roots Mens Salon Alpha
         sg_roots, _ = StoreGroup.objects.get_or_create(
             name="Roots Mens Salon Alpha Group",
             defaults={
@@ -178,34 +187,40 @@ class Command(BaseCommand):
                 "business_type": "SALON",
                 "email": "contact@rootssalon.in",
                 "phone": "+917021795120",
+                "address": "Indiranagar 100ft Road, Bengaluru",
+                "state": "Karnataka",
                 "city": "Bengaluru",
                 "status": "APPROVED",
             }
         )
         brand_roots, _ = Brand.objects.get_or_create(
             name="Roots Mens Salon Alpha",
-            defaults={"business": biz_roots, "status": "APPROVED"}
+            business=biz_roots,
+            defaults={"status": "APPROVED"}
         )
 
-        outlet_roots, _ = Outlet.objects.get_or_create(
-            store_group=sg_roots,
-            name="Roots Men’s Salon – Alpha",
-            defaults={
-                "city": city,
-                "zone": zone_map.get("Indiranagar"),
-                "address_line": "Indiranagar 100ft Road, Bengaluru",
-                "pincode": "560038",
-                "phone": "+917021795120",
-                "status": "active",
-                "opening_time": "09:00:00",
-                "closing_time": "21:00:00",
-                "lat": 12.9784,
-                "lng": 77.6408,
-            }
-        )
-        outlet_roots.status = "active"
-        outlet_roots.city = city
-        outlet_roots.save()
+        outlet_roots = Outlet.objects.filter(store_group=sg_roots, name__icontains="Roots").first()
+        if not outlet_roots:
+            outlet_roots = Outlet.objects.create(
+                store_group=sg_roots,
+                name="Roots Men’s Salon – Alpha",
+                city=city,
+                zone=zone_map.get("Indiranagar"),
+                address_line="Indiranagar 100ft Road, Bengaluru",
+                pincode="560038",
+                phone="+917021795120",
+                status="active",
+                opening_time="09:00:00",
+                closing_time="21:00:00",
+                invoice_prefix="RT01",
+                lat=12.9784,
+                lng=77.6408,
+            )
+        else:
+            outlet_roots.city = city
+            outlet_roots.zone = zone_map.get("Indiranagar")
+            outlet_roots.status = "active"
+            outlet_roots.save()
 
         store_roots, _ = Store.objects.get_or_create(
             name="Roots Mens Salon Alpha",
@@ -217,17 +232,15 @@ class Command(BaseCommand):
                 "address": "Indiranagar 100ft Road, Bengaluru",
                 "status": "ACTIVE",
                 "working_hours": working_hours_default,
-                "has_online_booking": True,
                 "is_premium_listing": True,
             }
         )
         store_roots.outlet = outlet_roots
         store_roots.status = "ACTIVE"
-        store_roots.has_online_booking = True
         store_roots.working_hours = working_hours_default
         store_roots.save()
 
-        StorePublicProfile.objects.get_or_create(
+        StorePublicProfile.objects.update_or_create(
             store=store_roots,
             defaults={
                 "slug": "roots-mens-salon-alpha",
@@ -237,7 +250,7 @@ class Command(BaseCommand):
             }
         )
 
-        # 4. Clean Services Setup for New Look
+        # 5. Clean Services Setup for New Look
         NEWLOOK_SERVICES = [
             ("Normal Haircut", 250.00, 30),
             ("Stylish Haircut", 350.00, 35),

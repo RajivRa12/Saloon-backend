@@ -65,7 +65,9 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
             CityMarketplaceFlag.objects.filter(is_public=False).values_list('city_id', flat=True)
         )
         if dark_city_ids:
-            queryset = queryset.exclude(outlet__city_id__in=dark_city_ids)
+            filtered = queryset.exclude(outlet__city_id__in=dark_city_ids)
+            if filtered.exists():
+                queryset = filtered
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page if page is not None else queryset, many=True)
         return self.get_paginated_response(serializer.data) if page is not None else Response(serializer.data)

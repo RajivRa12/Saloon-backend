@@ -16,3 +16,4 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(run_cleanup, reverse_code=migrations.RunPython.noop),
     ]
+
