@@ -9,7 +9,7 @@ from apps.core.models import (
 logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
-    help = "Removes old dummy/mock stores and ensures clean real stores, store groups, and services are active."
+    help = "Removes old dummy/mock stores and ensures clean real stores, store groups, and services are active in Bengaluru and Chennai."
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.NOTICE("Starting database cleanup of dummy/mock data..."))
@@ -49,35 +49,42 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"✔ Deleted {deleted_stores_count} old dummy stores."))
 
-        # Clear old dummy admin audit logs and test bookings
+        # Clear old dummy admin audit logs
         from django.contrib.admin.models import LogEntry
         LogEntry.objects.all().delete()
         self.stdout.write(self.style.SUCCESS("✔ Cleaned historical dummy admin log entries."))
 
-        # 2. Ensure Cities and Zones & Enable Marketplace Flag
-        city, _ = City.objects.get_or_create(
-            name="Bengaluru",
-            defaults={"state": "Karnataka", "is_active": True}
-        )
-        if not city.is_active:
-            city.is_active = True
-            city.save()
+        # 2. Setup Cities, Zones & Enable Marketplace Flags (Bengaluru & Chennai)
+        cities_config = [
+            ("Bengaluru", "Karnataka", ["JP Nagar", "Indiranagar", "Koramangala", "HSR Layout", "Whitefield", "Lavelle Road"]),
+            ("Chennai", "Tamil Nadu", ["Nungambakkam", "Alwarpet", "Anna Nagar", "Adyar", "T. Nagar"]),
+        ]
 
-        # CRITICAL: Flip marketplace flag to public so Bengaluru stores are visible in customer marketplace
-        CityMarketplaceFlag.objects.update_or_create(
-            city=city,
-            defaults={
-                "is_public": True,
-                "min_store_threshold": 1,
-                "enabled_at": timezone.now(),
-            }
-        )
-
-        zones = ["JP Nagar", "Indiranagar", "Koramangala", "HSR Layout", "Whitefield", "Lavelle Road"]
+        city_map = {}
         zone_map = {}
-        for z_name in zones:
-            z, _ = Zone.objects.get_or_create(city=city, name=z_name, defaults={"is_active": True})
-            zone_map[z_name] = z
+
+        for c_name, c_state, z_list in cities_config:
+            city_obj, _ = City.objects.get_or_create(
+                name=c_name,
+                defaults={"state": c_state, "is_active": True}
+            )
+            if not city_obj.is_active:
+                city_obj.is_active = True
+                city_obj.save()
+            city_map[c_name] = city_obj
+
+            CityMarketplaceFlag.objects.update_or_create(
+                city=city_obj,
+                defaults={
+                    "is_public": True,
+                    "min_store_threshold": 1,
+                    "enabled_at": timezone.now(),
+                }
+            )
+
+            for z_name in z_list:
+                z, _ = Zone.objects.get_or_create(city=city_obj, name=z_name, defaults={"is_active": True})
+                zone_map[f"{c_name}:{z_name}"] = z
 
         working_hours_default = {
             "mon": "09:00-21:00",
@@ -89,7 +96,7 @@ class Command(BaseCommand):
             "sun": "09:00-21:00",
         }
 
-        # 3. Setup The New Look Men’s Saloon
+        # 3. Setup The New Look Men’s Saloon Group
         sg_newlook, _ = StoreGroup.objects.get_or_create(
             name="The New Look Men’s Saloon Group",
             defaults={
@@ -121,35 +128,34 @@ class Command(BaseCommand):
             defaults={"status": "APPROVED"}
         )
 
-        outlet_newlook = Outlet.objects.filter(store_group=sg_newlook, name__icontains="New Look").first()
-        if not outlet_newlook:
-            outlet_newlook = Outlet.objects.create(
-                store_group=sg_newlook,
-                name="The New Look Men’s Saloon – JP Nagar",
-                city=city,
-                zone=zone_map.get("JP Nagar"),
-                address_line="JP Nagar 7th Phase, Bengaluru",
-                pincode="560078",
-                phone="+919731212730",
-                status="active",
-                opening_time="09:00:00",
-                closing_time="21:00:00",
-                invoice_prefix="NL01",
-                lat=12.9063,
-                lng=77.5857,
-            )
-        else:
-            outlet_newlook.city = city
-            outlet_newlook.zone = zone_map.get("JP Nagar")
-            outlet_newlook.status = "active"
-            outlet_newlook.save()
+        # 3A. New Look - Bengaluru Outlet & Store
+        outlet_newlook_blr, _ = Outlet.objects.get_or_create(
+            store_group=sg_newlook,
+            name="The New Look Men’s Saloon – JP Nagar",
+            defaults={
+                "city": city_map["Bengaluru"],
+                "zone": zone_map.get("Bengaluru:JP Nagar"),
+                "address_line": "JP Nagar 7th Phase, Bengaluru",
+                "pincode": "560078",
+                "phone": "+919731212730",
+                "status": "active",
+                "opening_time": "09:00:00",
+                "closing_time": "21:00:00",
+                "invoice_prefix": "NL01",
+                "lat": 12.9063,
+                "lng": 77.5857,
+            }
+        )
+        outlet_newlook_blr.city = city_map["Bengaluru"]
+        outlet_newlook_blr.status = "active"
+        outlet_newlook_blr.save()
 
-        store_newlook, _ = Store.objects.get_or_create(
+        store_newlook_blr, _ = Store.objects.get_or_create(
             name="The New Look Men’s Saloon",
             defaults={
                 "business": biz_newlook,
                 "brand": brand_newlook,
-                "outlet": outlet_newlook,
+                "outlet": outlet_newlook_blr,
                 "contact_number": "+919731212730",
                 "address": "JP Nagar 7th Phase, Bengaluru",
                 "status": "ACTIVE",
@@ -157,22 +163,72 @@ class Command(BaseCommand):
                 "is_premium_listing": True,
             }
         )
-        store_newlook.outlet = outlet_newlook
-        store_newlook.status = "ACTIVE"
-        store_newlook.working_hours = working_hours_default
-        store_newlook.save()
+        store_newlook_blr.outlet = outlet_newlook_blr
+        store_newlook_blr.status = "ACTIVE"
+        store_newlook_blr.working_hours = working_hours_default
+        store_newlook_blr.save()
 
         StorePublicProfile.objects.update_or_create(
-            store=store_newlook,
+            store=store_newlook_blr,
             defaults={
                 "slug": "the-new-look-mens-saloon",
-                "about": "Premier grooming destination for modern men. Expert haircuts, styling, beard detailing and head massages in JP Nagar.",
+                "about": "Premier grooming destination for modern men. Expert haircuts, styling, beard detailing and head massages in JP Nagar, Bengaluru.",
                 "is_microsite_live": True,
                 "marketplace_public": True,
             }
         )
 
-        # 4. Setup Roots Mens Salon Alpha
+        # 3B. New Look - Chennai Outlet & Store
+        outlet_newlook_chn, _ = Outlet.objects.get_or_create(
+            store_group=sg_newlook,
+            name="The New Look Men’s Saloon – Anna Nagar",
+            defaults={
+                "city": city_map["Chennai"],
+                "zone": zone_map.get("Chennai:Anna Nagar"),
+                "address_line": "2nd Avenue, Anna Nagar, Chennai",
+                "pincode": "600040",
+                "phone": "+919731212730",
+                "status": "active",
+                "opening_time": "09:00:00",
+                "closing_time": "21:00:00",
+                "invoice_prefix": "NL02",
+                "lat": 13.0850,
+                "lng": 80.2101,
+            }
+        )
+        outlet_newlook_chn.city = city_map["Chennai"]
+        outlet_newlook_chn.status = "active"
+        outlet_newlook_chn.save()
+
+        store_newlook_chn, _ = Store.objects.get_or_create(
+            name="The New Look Men’s Saloon (Anna Nagar)",
+            defaults={
+                "business": biz_newlook,
+                "brand": brand_newlook,
+                "outlet": outlet_newlook_chn,
+                "contact_number": "+919731212730",
+                "address": "2nd Avenue, Anna Nagar, Chennai",
+                "status": "ACTIVE",
+                "working_hours": working_hours_default,
+                "is_premium_listing": True,
+            }
+        )
+        store_newlook_chn.outlet = outlet_newlook_chn
+        store_newlook_chn.status = "ACTIVE"
+        store_newlook_chn.working_hours = working_hours_default
+        store_newlook_chn.save()
+
+        StorePublicProfile.objects.update_or_create(
+            store=store_newlook_chn,
+            defaults={
+                "slug": "the-new-look-mens-saloon-chennai",
+                "about": "Top-tier gentlemen's haircuts, beard contouring, facials and hair spa in Anna Nagar, Chennai.",
+                "is_microsite_live": True,
+                "marketplace_public": True,
+            }
+        )
+
+        # 4. Setup Roots Mens Salon Alpha Group
         sg_roots, _ = StoreGroup.objects.get_or_create(
             name="Roots Mens Salon Alpha Group",
             defaults={
@@ -204,35 +260,34 @@ class Command(BaseCommand):
             defaults={"status": "APPROVED"}
         )
 
-        outlet_roots = Outlet.objects.filter(store_group=sg_roots, name__icontains="Roots").first()
-        if not outlet_roots:
-            outlet_roots = Outlet.objects.create(
-                store_group=sg_roots,
-                name="Roots Men’s Salon – Alpha",
-                city=city,
-                zone=zone_map.get("Indiranagar"),
-                address_line="Indiranagar 100ft Road, Bengaluru",
-                pincode="560038",
-                phone="+917021795120",
-                status="active",
-                opening_time="09:00:00",
-                closing_time="21:00:00",
-                invoice_prefix="RT01",
-                lat=12.9784,
-                lng=77.6408,
-            )
-        else:
-            outlet_roots.city = city
-            outlet_roots.zone = zone_map.get("Indiranagar")
-            outlet_roots.status = "active"
-            outlet_roots.save()
+        # 4A. Roots - Bengaluru Outlet & Store
+        outlet_roots_blr, _ = Outlet.objects.get_or_create(
+            store_group=sg_roots,
+            name="Roots Men’s Salon – Alpha",
+            defaults={
+                "city": city_map["Bengaluru"],
+                "zone": zone_map.get("Bengaluru:Indiranagar"),
+                "address_line": "Indiranagar 100ft Road, Bengaluru",
+                "pincode": "560038",
+                "phone": "+917021795120",
+                "status": "active",
+                "opening_time": "09:00:00",
+                "closing_time": "21:00:00",
+                "invoice_prefix": "RT01",
+                "lat": 12.9784,
+                "lng": 77.6408,
+            }
+        )
+        outlet_roots_blr.city = city_map["Bengaluru"]
+        outlet_roots_blr.status = "active"
+        outlet_roots_blr.save()
 
-        store_roots, _ = Store.objects.get_or_create(
+        store_roots_blr, _ = Store.objects.get_or_create(
             name="Roots Mens Salon Alpha",
             defaults={
                 "business": biz_roots,
                 "brand": brand_roots,
-                "outlet": outlet_roots,
+                "outlet": outlet_roots_blr,
                 "contact_number": "+917021795120",
                 "address": "Indiranagar 100ft Road, Bengaluru",
                 "status": "ACTIVE",
@@ -240,16 +295,66 @@ class Command(BaseCommand):
                 "is_premium_listing": True,
             }
         )
-        store_roots.outlet = outlet_roots
-        store_roots.status = "ACTIVE"
-        store_roots.working_hours = working_hours_default
-        store_roots.save()
+        store_roots_blr.outlet = outlet_roots_blr
+        store_roots_blr.status = "ACTIVE"
+        store_roots_blr.working_hours = working_hours_default
+        store_roots_blr.save()
 
         StorePublicProfile.objects.update_or_create(
-            store=store_roots,
+            store=store_roots_blr,
             defaults={
                 "slug": "roots-mens-salon-alpha",
                 "about": "Bespoke gentlemen's grooming experience in Indiranagar. Premium fades, classic shaves, revitalizing hair spa and facials.",
+                "is_microsite_live": True,
+                "marketplace_public": True,
+            }
+        )
+
+        # 4B. Roots - Chennai Outlet & Store
+        outlet_roots_chn, _ = Outlet.objects.get_or_create(
+            store_group=sg_roots,
+            name="Roots Men’s Salon – Nungambakkam",
+            defaults={
+                "city": city_map["Chennai"],
+                "zone": zone_map.get("Chennai:Nungambakkam"),
+                "address_line": "Nungambakkam High Road, Chennai",
+                "pincode": "600034",
+                "phone": "+919840256789",
+                "status": "active",
+                "opening_time": "09:00:00",
+                "closing_time": "21:00:00",
+                "invoice_prefix": "RT02",
+                "lat": 13.0604,
+                "lng": 80.2443,
+            }
+        )
+        outlet_roots_chn.city = city_map["Chennai"]
+        outlet_roots_chn.status = "active"
+        outlet_roots_chn.save()
+
+        store_roots_chn, _ = Store.objects.get_or_create(
+            name="Roots Men’s Salon (Nungambakkam)",
+            defaults={
+                "business": biz_roots,
+                "brand": brand_roots,
+                "outlet": outlet_roots_chn,
+                "contact_number": "+919840256789",
+                "address": "Nungambakkam High Road, Chennai",
+                "status": "ACTIVE",
+                "working_hours": working_hours_default,
+                "is_premium_listing": True,
+            }
+        )
+        store_roots_chn.outlet = outlet_roots_chn
+        store_roots_chn.status = "ACTIVE"
+        store_roots_chn.working_hours = working_hours_default
+        store_roots_chn.save()
+
+        StorePublicProfile.objects.update_or_create(
+            store=store_roots_chn,
+            defaults={
+                "slug": "roots-mens-salon-chennai",
+                "about": "Signature grooming salon in Nungambakkam, Chennai. Precision haircuts, organic beard therapy, detox facials.",
                 "is_microsite_live": True,
                 "marketplace_public": True,
             }
@@ -323,4 +428,4 @@ class Command(BaseCommand):
             svc.store_group = sg_roots
             svc.save()
 
-        self.stdout.write(self.style.SUCCESS("✔ Clean stores, outlets, categories, and services synchronized successfully!"))
+        self.stdout.write(self.style.SUCCESS("✔ Clean stores, outlets, categories, and services in Bengaluru & Chennai synchronized successfully!"))
