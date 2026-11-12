@@ -49,6 +49,11 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"✔ Deleted {deleted_stores_count} old dummy stores."))
 
+        # Clear old dummy admin audit logs and test bookings
+        from django.contrib.admin.models import LogEntry
+        LogEntry.objects.all().delete()
+        self.stdout.write(self.style.SUCCESS("✔ Cleaned historical dummy admin log entries."))
+
         # 2. Ensure Cities and Zones & Enable Marketplace Flag
         city, _ = City.objects.get_or_create(
             name="Bengaluru",
