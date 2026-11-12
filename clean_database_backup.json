@@ -1,0 +1,1837 @@
+[
+{
+  "model": "core.business",
+  "pk": "669d65b6-79eb-467a-9455-54db39814722",
+  "fields": {
+    "name": "The New Look Men’s Saloon Group",
+    "business_type": "SALON",
+    "registration_number": null,
+    "email": "the-new-look-mens-saloon@nearbyme.local",
+    "phone": "+919876543210",
+    "website": null,
+    "logo": "",
+    "address": "",
+    "country": "India",
+    "state": "",
+    "city": "",
+    "status": "ACTIVE",
+    "created_at": "2026-11-12T10:48:02.800Z",
+    "updated_at": "2026-11-12T10:48:02.800Z"
+  }
+},
+{
+  "model": "core.business",
+  "pk": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+  "fields": {
+    "name": "Roots Mens Salon Alpha Group",
+    "business_type": "SALON",
+    "registration_number": null,
+    "email": "roots-mens-salon-alpha@nearbyme.local",
+    "phone": "7021795120",
+    "website": null,
+    "logo": "",
+    "address": "",
+    "country": "India",
+    "state": "",
+    "city": "",
+    "status": "ACTIVE",
+    "created_at": "2026-11-12T10:52:30.253Z",
+    "updated_at": "2026-11-12T10:52:30.253Z"
+  }
+},
+{
+  "model": "core.business",
+  "pk": "c4a668d6-f225-4ba6-95fa-20d16b575d6e",
+  "fields": {
+    "name": "Test Biz",
+    "business_type": "SALON",
+    "registration_number": null,
+    "email": "test@biz.com",
+    "phone": "+919999999999",
+    "website": null,
+    "logo": "",
+    "address": "MG Road",
+    "country": "India",
+    "state": "Karnataka",
+    "city": "Bengaluru",
+    "status": "PENDING",
+    "created_at": "2026-11-12T16:20:00.552Z",
+    "updated_at": "2026-11-12T16:20:00.552Z"
+  }
+},
+{
+  "model": "core.brand",
+  "pk": 10,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "The New Look Men’s Saloon",
+    "logo": "",
+    "status": "ACTIVE",
+    "created_at": "2026-11-12T10:48:02.806Z",
+    "updated_at": "2026-11-12T10:48:02.806Z"
+  }
+},
+{
+  "model": "core.brand",
+  "pk": 11,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Roots Mens Salon Alpha",
+    "logo": "",
+    "status": "ACTIVE",
+    "created_at": "2026-11-12T10:52:30.257Z",
+    "updated_at": "2026-11-12T10:52:30.257Z"
+  }
+},
+{
+  "model": "core.brand",
+  "pk": 12,
+  "fields": {
+    "business": "c4a668d6-f225-4ba6-95fa-20d16b575d6e",
+    "name": "Test Brand",
+    "logo": "",
+    "status": "APPROVED",
+    "created_at": "2026-11-12T16:20:00.557Z",
+    "updated_at": "2026-11-12T16:20:00.557Z"
+  }
+},
+{
+  "model": "core.store",
+  "pk": 13,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "brand": 10,
+    "name": "The New Look Men’s Saloon",
+    "address": "Shree Sai Vishwa Building, 7th Cross Road, JP Nagar 6th Phase, Bengaluru 560078",
+    "location": "12.9075,77.5785",
+    "working_hours": {
+      "fri": "09:00-21:00",
+      "mon": "09:00-21:00",
+      "sat": "09:00-21:00",
+      "sun": "09:00-21:00",
+      "thu": "09:00-21:00",
+      "tue": "09:00-21:00",
+      "wed": "09:00-21:00"
+    },
+    "currency": "INR",
+    "timezone": "Asia/Kolkata",
+    "gst_number": null,
+    "contact_number": null,
+    "email": null,
+    "status": "ACTIVE",
+    "is_premium_listing": false,
+    "outlet": "99cd1485-0f00-4a89-b788-826151c80bbb",
+    "created_at": "2026-11-12T10:48:02.751Z",
+    "updated_at": "2026-11-12T16:59:40.984Z"
+  }
+},
+{
+  "model": "core.store",
+  "pk": 14,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "brand": 11,
+    "name": "Roots Mens Salon Alpha",
+    "address": "1366, Saraki Village Road, SBI Colony, JP Nagar 1st Phase, Bengaluru",
+    "location": null,
+    "working_hours": {
+      "fri": "09:00-21:00",
+      "mon": "09:00-21:00",
+      "sat": "09:00-21:00",
+      "sun": "09:00-21:00",
+      "thu": "09:00-21:00",
+      "tue": "09:00-21:00",
+      "wed": "09:00-21:00"
+    },
+    "currency": "INR",
+    "timezone": "Asia/Kolkata",
+    "gst_number": null,
+    "contact_number": "7021795120",
+    "email": null,
+    "status": "ACTIVE",
+    "is_premium_listing": false,
+    "outlet": "3389e920-ecd0-41ab-b42f-e5689c0a6fd2",
+    "created_at": "2026-11-12T10:52:30.239Z",
+    "updated_at": "2026-11-12T16:59:41.011Z"
+  }
+},
+{
+  "model": "core.store",
+  "pk": 15,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "brand": 10,
+    "name": "The New Look Men’s Saloon (Anna Nagar)",
+    "address": "2nd Avenue, Anna Nagar, Chennai",
+    "location": null,
+    "working_hours": {
+      "fri": "09:00-21:00",
+      "mon": "09:00-21:00",
+      "sat": "09:00-21:00",
+      "sun": "09:00-21:00",
+      "thu": "09:00-21:00",
+      "tue": "09:00-21:00",
+      "wed": "09:00-21:00"
+    },
+    "currency": "INR",
+    "timezone": "Asia/Kolkata",
+    "gst_number": null,
+    "contact_number": "+919731212730",
+    "email": null,
+    "status": "ACTIVE",
+    "is_premium_listing": true,
+    "outlet": "3c7e5df7-1827-470d-b7bf-bb0d81d2b06f",
+    "created_at": "2026-11-12T16:59:40.993Z",
+    "updated_at": "2026-11-12T16:59:41.005Z"
+  }
+},
+{
+  "model": "core.store",
+  "pk": 16,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "brand": 11,
+    "name": "Roots Men’s Salon (Nungambakkam)",
+    "address": "Nungambakkam High Road, Chennai",
+    "location": null,
+    "working_hours": {
+      "fri": "09:00-21:00",
+      "mon": "09:00-21:00",
+      "sat": "09:00-21:00",
+      "sun": "09:00-21:00",
+      "thu": "09:00-21:00",
+      "tue": "09:00-21:00",
+      "wed": "09:00-21:00"
+    },
+    "currency": "INR",
+    "timezone": "Asia/Kolkata",
+    "gst_number": null,
+    "contact_number": "+919840256789",
+    "email": null,
+    "status": "ACTIVE",
+    "is_premium_listing": true,
+    "outlet": "e7a3ec82-570d-4a14-844e-de22db6e0968",
+    "created_at": "2026-11-12T16:59:41.015Z",
+    "updated_at": "2026-11-12T16:59:41.019Z"
+  }
+},
+{
+  "model": "core.storepublicprofile",
+  "pk": 12,
+  "fields": {
+    "store": 13,
+    "slug": "the-new-look-mens-saloon",
+    "custom_domain": null,
+    "headline": null,
+    "about": "Premier grooming destination for modern men. Expert haircuts, styling, beard detailing and head massages in JP Nagar, Bengaluru.",
+    "cover_image_url": null,
+    "gallery": [],
+    "amenities": [],
+    "cancellation_policy_text": null,
+    "is_microsite_live": true,
+    "marketplace_public": true,
+    "created_at": "2026-11-12T10:48:02.775Z"
+  }
+},
+{
+  "model": "core.storepublicprofile",
+  "pk": 13,
+  "fields": {
+    "store": 14,
+    "slug": "roots-mens-salon-alpha",
+    "custom_domain": null,
+    "headline": null,
+    "about": "Bespoke gentlemen's grooming experience in Indiranagar. Premium fades, classic shaves, revitalizing hair spa and facials.",
+    "cover_image_url": null,
+    "gallery": [],
+    "amenities": [],
+    "cancellation_policy_text": null,
+    "is_microsite_live": true,
+    "marketplace_public": true,
+    "created_at": "2026-11-12T10:52:30.248Z"
+  }
+},
+{
+  "model": "core.storepublicprofile",
+  "pk": 14,
+  "fields": {
+    "store": 15,
+    "slug": "the-new-look-mens-saloon-chennai",
+    "custom_domain": null,
+    "headline": null,
+    "about": "Top-tier gentlemen's haircuts, beard contouring, facials and hair spa in Anna Nagar, Chennai.",
+    "cover_image_url": null,
+    "gallery": [],
+    "amenities": [],
+    "cancellation_policy_text": null,
+    "is_microsite_live": true,
+    "marketplace_public": true,
+    "created_at": "2026-11-12T16:59:40.997Z"
+  }
+},
+{
+  "model": "core.storepublicprofile",
+  "pk": 15,
+  "fields": {
+    "store": 16,
+    "slug": "roots-mens-salon-chennai",
+    "custom_domain": null,
+    "headline": null,
+    "about": "Signature grooming salon in Nungambakkam, Chennai. Precision haircuts, organic beard therapy, detox facials.",
+    "cover_image_url": null,
+    "gallery": [],
+    "amenities": [],
+    "cancellation_policy_text": null,
+    "is_microsite_live": true,
+    "marketplace_public": true,
+    "created_at": "2026-11-12T16:59:41.017Z"
+  }
+},
+{
+  "model": "core.citymarketplaceflag",
+  "pk": 2,
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "is_public": true,
+    "min_store_threshold": 1,
+    "enabled_at": "2026-11-12T16:59:40.947Z"
+  }
+},
+{
+  "model": "core.citymarketplaceflag",
+  "pk": 3,
+  "fields": {
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "is_public": true,
+    "min_store_threshold": 1,
+    "enabled_at": "2026-11-12T16:59:40.959Z"
+  }
+},
+{
+  "model": "core.user",
+  "fields": {
+    "password": "pbkdf2_sha256$600000$UXx9L6XiMEVnIGuJcInFt2$GlZUlr0h8uwxACVJItAwW1UU8z6HmJ+zPvp+iAIqfiM=",
+    "last_login": "2026-11-12T15:21:09.248Z",
+    "is_superuser": true,
+    "first_name": "Admin",
+    "last_name": "User",
+    "is_staff": true,
+    "date_joined": "2026-07-20T21:36:04.214Z",
+    "role": "ADMIN",
+    "brand": null,
+    "store": null,
+    "outlet": null,
+    "email": "admin@nearbyme.com",
+    "username": "admin@nearbyme.com",
+    "phone": null,
+    "is_active": true,
+    "loyalty_points": 0,
+    "expo_push_token": null,
+    "groups": [],
+    "user_permissions": []
+  }
+},
+{
+  "model": "core.user",
+  "fields": {
+    "password": "pbkdf2_sha256$600000$c7PwKh50V0vBcfdKJt3QRt$LmnuCMxqM4VQnglngdO92Z6uq2cd7sNyw+xOvaBsF4I=",
+    "last_login": null,
+    "is_superuser": false,
+    "first_name": "root",
+    "last_name": "men",
+    "is_staff": false,
+    "date_joined": "2026-11-12T11:08:11.599Z",
+    "role": "STORE_ADMIN",
+    "brand": 11,
+    "store": 14,
+    "outlet": "3389e920-ecd0-41ab-b42f-e5689c0a6fd2",
+    "email": "manager@rootsmenssalonalpha.com",
+    "username": null,
+    "phone": null,
+    "is_active": true,
+    "loyalty_points": 0,
+    "expo_push_token": null,
+    "groups": [],
+    "user_permissions": []
+  }
+},
+{
+  "model": "core.user",
+  "fields": {
+    "password": "!GHwWYFN6mGIteUKn2IvK3aQUdxtHKgrl2P9U1F7W",
+    "last_login": null,
+    "is_superuser": false,
+    "first_name": "ram",
+    "last_name": "",
+    "is_staff": false,
+    "date_joined": "2026-11-12T11:10:53.813Z",
+    "role": "CUSTOMER",
+    "brand": null,
+    "store": null,
+    "outlet": null,
+    "email": "rfdsdgsg@gmail.com",
+    "username": "+919876543322",
+    "phone": "+919876543322",
+    "is_active": true,
+    "loyalty_points": 0,
+    "expo_push_token": null,
+    "groups": [],
+    "user_permissions": []
+  }
+},
+{
+  "model": "core.user",
+  "fields": {
+    "password": "!Vczd9qJ70YlFHuS5Aalr6EpeT1V6qZWYu4uN2THT",
+    "last_login": null,
+    "is_superuser": false,
+    "first_name": "",
+    "last_name": "",
+    "is_staff": false,
+    "date_joined": "2026-11-12T17:24:15.395Z",
+    "role": "CUSTOMER",
+    "brand": null,
+    "store": null,
+    "outlet": null,
+    "email": "919840256789@phone.nearbyme.local",
+    "username": "+919840256789",
+    "phone": "+919840256789",
+    "is_active": true,
+    "loyalty_points": 0,
+    "expo_push_token": null,
+    "groups": [],
+    "user_permissions": []
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 19,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Normal Haircut",
+    "is_active": true,
+    "created_at": "2026-11-12T10:54:30.080Z",
+    "updated_at": "2026-11-12T10:54:30.080Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 20,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Stylish Haircut",
+    "is_active": true,
+    "created_at": "2026-11-12T10:54:40.239Z",
+    "updated_at": "2026-11-12T10:54:40.239Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 21,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Beard Trim",
+    "is_active": true,
+    "created_at": "2026-11-12T10:54:49.133Z",
+    "updated_at": "2026-11-12T10:54:49.133Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 22,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Haircut + Beard",
+    "is_active": true,
+    "created_at": "2026-11-12T10:54:59.605Z",
+    "updated_at": "2026-11-12T10:54:59.605Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 23,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Clean Shave",
+    "is_active": true,
+    "created_at": "2026-11-12T10:55:07.909Z",
+    "updated_at": "2026-11-12T10:55:07.909Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 24,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Hair Wash",
+    "is_active": true,
+    "created_at": "2026-11-12T10:55:19.045Z",
+    "updated_at": "2026-11-12T10:55:19.045Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 25,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Head Massage",
+    "is_active": true,
+    "created_at": "2026-11-12T10:55:27.527Z",
+    "updated_at": "2026-11-12T10:55:27.527Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 26,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Hair Spa",
+    "is_active": true,
+    "created_at": "2026-11-12T10:55:34.418Z",
+    "updated_at": "2026-11-12T10:55:34.419Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 27,
+  "fields": {
+    "business": "669d65b6-79eb-467a-9455-54db39814722",
+    "name": "Hair Colour",
+    "is_active": true,
+    "created_at": "2026-11-12T10:55:40.901Z",
+    "updated_at": "2026-11-12T10:55:40.901Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 28,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Beard Trim",
+    "is_active": true,
+    "created_at": "2026-11-12T11:21:29.137Z",
+    "updated_at": "2026-11-12T11:21:29.138Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 29,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Normal Haircut",
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:57.998Z",
+    "updated_at": "2026-11-12T16:07:57.998Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 30,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Stylish Haircut",
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.009Z",
+    "updated_at": "2026-11-12T16:07:58.009Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 31,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Clean Shave",
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.032Z",
+    "updated_at": "2026-11-12T16:07:58.032Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 32,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Hair Spa",
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.049Z",
+    "updated_at": "2026-11-12T16:07:58.049Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 33,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Head Massage",
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.059Z",
+    "updated_at": "2026-11-12T16:07:58.059Z"
+  }
+},
+{
+  "model": "core.servicecategory",
+  "pk": 34,
+  "fields": {
+    "business": "80231937-10d2-4c4b-9b27-eaefeb4884d1",
+    "name": "Haircut + Beard",
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.069Z",
+    "updated_at": "2026-11-12T16:07:58.069Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 39,
+  "fields": {
+    "category": 27,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Normal Haircut",
+    "duration_minutes": 30,
+    "price": "250.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T10:56:19.399Z",
+    "updated_at": "2026-11-12T11:21:17.624Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 40,
+  "fields": {
+    "category": 21,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Beard Trim",
+    "duration_minutes": 15,
+    "price": "100.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T10:56:38.141Z",
+    "updated_at": "2026-11-12T16:59:41.035Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 41,
+  "fields": {
+    "category": 23,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Clean Shave",
+    "duration_minutes": 20,
+    "price": "150.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T10:57:02.619Z",
+    "updated_at": "2026-11-12T16:59:41.039Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 42,
+  "fields": {
+    "category": 27,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Hair Colour",
+    "duration_minutes": 60,
+    "price": "1000.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T10:57:29.141Z",
+    "updated_at": "2026-11-12T16:59:41.053Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 43,
+  "fields": {
+    "category": 26,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Hair Spa",
+    "duration_minutes": 45,
+    "price": "350.00",
+    "is_home_service_available": false,
+    "is_premium_listing": true,
+    "is_active": true,
+    "created_at": "2026-11-12T10:57:52.226Z",
+    "updated_at": "2026-11-12T16:59:41.050Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 44,
+  "fields": {
+    "category": 22,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Haircut + Beard",
+    "duration_minutes": 45,
+    "price": "250.00",
+    "is_home_service_available": false,
+    "is_premium_listing": true,
+    "is_active": true,
+    "created_at": "2026-11-12T10:58:10.728Z",
+    "updated_at": "2026-11-12T16:59:41.057Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 48,
+  "fields": {
+    "category": 19,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Normal Haircut",
+    "duration_minutes": 30,
+    "price": "250.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:57.922Z",
+    "updated_at": "2026-11-12T16:59:41.026Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 49,
+  "fields": {
+    "category": 20,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Stylish Haircut",
+    "duration_minutes": 35,
+    "price": "350.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:57.940Z",
+    "updated_at": "2026-11-12T16:59:41.032Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 50,
+  "fields": {
+    "category": 24,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Hair Wash",
+    "duration_minutes": 15,
+    "price": "150.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:57.964Z",
+    "updated_at": "2026-11-12T16:59:41.042Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 51,
+  "fields": {
+    "category": 25,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "Head Massage",
+    "duration_minutes": 30,
+    "price": "300.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:57.973Z",
+    "updated_at": "2026-11-12T16:59:41.046Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 52,
+  "fields": {
+    "category": 29,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Normal Haircut",
+    "duration_minutes": 30,
+    "price": "300.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.001Z",
+    "updated_at": "2026-11-12T16:59:41.060Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 53,
+  "fields": {
+    "category": 30,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Stylish Haircut",
+    "duration_minutes": 40,
+    "price": "450.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.011Z",
+    "updated_at": "2026-11-12T16:59:41.064Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 54,
+  "fields": {
+    "category": 28,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Beard Trim",
+    "duration_minutes": 20,
+    "price": "150.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.022Z",
+    "updated_at": "2026-11-12T16:59:41.068Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 55,
+  "fields": {
+    "category": 31,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Clean Shave",
+    "duration_minutes": 20,
+    "price": "200.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.034Z",
+    "updated_at": "2026-11-12T16:59:41.071Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 56,
+  "fields": {
+    "category": 32,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Hair Spa",
+    "duration_minutes": 45,
+    "price": "600.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.052Z",
+    "updated_at": "2026-11-12T16:59:41.075Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 57,
+  "fields": {
+    "category": 33,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Head Massage",
+    "duration_minutes": 30,
+    "price": "400.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.061Z",
+    "updated_at": "2026-11-12T16:59:41.079Z"
+  }
+},
+{
+  "model": "core.service",
+  "pk": 58,
+  "fields": {
+    "category": 34,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Haircut + Beard",
+    "duration_minutes": 45,
+    "price": "400.00",
+    "is_home_service_available": false,
+    "is_premium_listing": false,
+    "is_active": true,
+    "created_at": "2026-11-12T16:07:58.071Z",
+    "updated_at": "2026-11-12T16:59:41.083Z"
+  }
+},
+{
+  "model": "core.platformsubscriptionplan",
+  "pk": 3,
+  "fields": {
+    "name": "Soft Launch Unlimited Partner",
+    "monthly_price": "0.00",
+    "commission_percent": "0.00",
+    "includes_crm": true,
+    "includes_analytics": true,
+    "includes_ai_assistant": true,
+    "includes_premium_listing": true,
+    "features": {},
+    "is_active": true,
+    "created_at": "2026-11-12T10:27:14.063Z"
+  }
+},
+{
+  "model": "core.storesubscription",
+  "pk": 9,
+  "fields": {
+    "store": 13,
+    "plan": 3,
+    "stripe_customer_id": null,
+    "stripe_subscription_id": null,
+    "status": "ACTIVE",
+    "current_period_end": "2027-11-12T10:48:02.813Z",
+    "created_at": "2026-11-12T10:48:02.814Z"
+  }
+},
+{
+  "model": "core.storesubscription",
+  "pk": 10,
+  "fields": {
+    "store": 14,
+    "plan": 3,
+    "stripe_customer_id": null,
+    "stripe_subscription_id": null,
+    "status": "ACTIVE",
+    "current_period_end": "2027-11-12T10:52:30.265Z",
+    "created_at": "2026-11-12T10:52:30.267Z"
+  }
+},
+{
+  "model": "core.storesubscription",
+  "pk": 11,
+  "fields": {
+    "store": 15,
+    "plan": 3,
+    "stripe_customer_id": null,
+    "stripe_subscription_id": null,
+    "status": "ACTIVE",
+    "current_period_end": "2027-11-12T16:59:41.001Z",
+    "created_at": "2026-11-12T16:59:41.002Z"
+  }
+},
+{
+  "model": "core.storesubscription",
+  "pk": 12,
+  "fields": {
+    "store": 16,
+    "plan": 3,
+    "stripe_customer_id": null,
+    "stripe_subscription_id": null,
+    "status": "ACTIVE",
+    "current_period_end": "2027-11-12T16:59:41.018Z",
+    "created_at": "2026-11-12T16:59:41.018Z"
+  }
+},
+{
+  "model": "core.plan",
+  "pk": "86ea8ffe-ba07-4d2e-a572-408075897bff",
+  "fields": {
+    "deleted_at": null,
+    "name": "Solo",
+    "price_paise": 199900,
+    "billing_period": "monthly",
+    "outlet_limit": 1,
+    "professional_limit": 5,
+    "feature_flags": {
+      "sms": true,
+      "custom_services": true
+    },
+    "is_active": true,
+    "created_at": "2026-08-01T19:18:44.080Z"
+  }
+},
+{
+  "model": "core.plan",
+  "pk": "99f64e6b-4385-4b31-a918-22f187e802a4",
+  "fields": {
+    "deleted_at": null,
+    "name": "Pilot",
+    "price_paise": 0,
+    "billing_period": "monthly",
+    "outlet_limit": 1,
+    "professional_limit": 3,
+    "feature_flags": {
+      "sms": false,
+      "custom_services": true
+    },
+    "is_active": true,
+    "created_at": "2026-08-01T19:18:44.078Z"
+  }
+},
+{
+  "model": "core.plan",
+  "pk": "b0f1fb25-3925-4448-aef5-399b035e4558",
+  "fields": {
+    "deleted_at": null,
+    "name": "Growth",
+    "price_paise": 499900,
+    "billing_period": "monthly",
+    "outlet_limit": 3,
+    "professional_limit": 20,
+    "feature_flags": {
+      "sms": true,
+      "api_access": true,
+      "custom_services": true
+    },
+    "is_active": true,
+    "created_at": "2026-08-01T19:18:44.081Z"
+  }
+},
+{
+  "model": "core.plan",
+  "pk": "f84460b6-ec4c-49d4-a512-bb2401c09b2e",
+  "fields": {
+    "deleted_at": null,
+    "name": "Chain",
+    "price_paise": 1499900,
+    "billing_period": "monthly",
+    "outlet_limit": 25,
+    "professional_limit": 150,
+    "feature_flags": {
+      "sms": true,
+      "api_access": true,
+      "multi_outlet": true,
+      "custom_services": true
+    },
+    "is_active": true,
+    "created_at": "2026-08-01T19:18:44.082Z"
+  }
+},
+{
+  "model": "core.storegroup",
+  "pk": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+  "fields": {
+    "deleted_at": null,
+    "name": "The New Look Men’s Saloon Group",
+    "legal_name": null,
+    "owner_name": "Salon Owner (Demo)",
+    "owner_phone": "+09731212730",
+    "owner_email": "Demo@gmail.com",
+    "gstin": null,
+    "pan": null,
+    "business_type": "salon",
+    "status": "active",
+    "status_changed_at": "2026-11-12T16:59:40.972Z",
+    "plan": null,
+    "access_code": null,
+    "term_start": null,
+    "term_end": null,
+    "created_at": "2026-11-12T10:34:50.858Z",
+    "approved_at": null
+  }
+},
+{
+  "model": "core.storegroup",
+  "pk": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+  "fields": {
+    "deleted_at": null,
+    "name": "Roots Mens Salon Alpha Group",
+    "legal_name": null,
+    "owner_name": "Roots Salon Management (Demo)",
+    "owner_phone": "+917021795120",
+    "owner_email": "demo12@gmail.com",
+    "gstin": null,
+    "pan": null,
+    "business_type": "salon",
+    "status": "active",
+    "status_changed_at": "2026-11-12T16:59:41.008Z",
+    "plan": null,
+    "access_code": null,
+    "term_start": null,
+    "term_end": null,
+    "created_at": "2026-11-12T10:49:07.466Z",
+    "approved_at": null
+  }
+},
+{
+  "model": "core.city",
+  "pk": "383ab4fa-2757-4f20-a9c2-9b34b4cb08f3",
+  "fields": {
+    "name": "New Delhi",
+    "state": "Delhi",
+    "is_active": true
+  }
+},
+{
+  "model": "core.city",
+  "pk": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+  "fields": {
+    "name": "Bengaluru",
+    "state": "Karnataka",
+    "is_active": true
+  }
+},
+{
+  "model": "core.city",
+  "pk": "a5407e06-83d1-4e5b-a024-9b70028dbf8d",
+  "fields": {
+    "name": "Mumbai",
+    "state": "Maharashtra",
+    "is_active": true
+  }
+},
+{
+  "model": "core.city",
+  "pk": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+  "fields": {
+    "name": "Chennai",
+    "state": "Tamil Nadu",
+    "is_active": true
+  }
+},
+{
+  "model": "core.city",
+  "pk": "f870da8e-a72a-460c-bcbd-5ed8699cf397",
+  "fields": {
+    "name": "Hyderabad",
+    "state": "Telangana",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "045bf06c-f076-4d83-b66e-69d6051cb714",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "HSR Layout",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "0a94af5f-1dc2-4082-9831-af8386179cb9",
+  "fields": {
+    "city": "a5407e06-83d1-4e5b-a024-9b70028dbf8d",
+    "name": "Powai",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "1af82ee3-fbe4-4505-8c6f-a9c2767585e1",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "JP Nagar 6th Phase",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "1c53e1fe-8df2-4983-bd64-5322bbb7667e",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "Lavelle Road",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "24cf7c08-fd85-4c11-8d77-6fb6754845e2",
+  "fields": {
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "name": "Anna Nagar",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "27363ae9-bd50-4616-956a-79f3166003b0",
+  "fields": {
+    "city": "f870da8e-a72a-460c-bcbd-5ed8699cf397",
+    "name": "Jubilee Hills",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "32be3221-c0ca-45a5-95c0-3394a1fccbae",
+  "fields": {
+    "city": "f870da8e-a72a-460c-bcbd-5ed8699cf397",
+    "name": "Madhapur",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "551240e3-9d03-4030-8390-a4d0a334a586",
+  "fields": {
+    "city": "383ab4fa-2757-4f20-a9c2-9b34b4cb08f3",
+    "name": "South Extension",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "58511fc0-9e6f-4573-a539-49878964cdb2",
+  "fields": {
+    "city": "383ab4fa-2757-4f20-a9c2-9b34b4cb08f3",
+    "name": "Greater Kailash",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "5b4d5c18-e134-4421-9477-df167a7e0027",
+  "fields": {
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "name": "Adyar",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "60e86225-386b-4834-9407-2434b3fa0e90",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "Indiranagar",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "73b47a88-376c-4843-8814-c183fee279c3",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "JP Nagar",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "79a9f4c9-372d-404f-9c42-3e8a1471cdc3",
+  "fields": {
+    "city": "383ab4fa-2757-4f20-a9c2-9b34b4cb08f3",
+    "name": "Khan Market",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "800da43e-be21-48da-a048-b73fb69855ce",
+  "fields": {
+    "city": "f870da8e-a72a-460c-bcbd-5ed8699cf397",
+    "name": "Banjara Hills",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "98d8cf90-780a-472c-a2fb-6bc3ea231619",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "Koramangala",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "a9b52370-7d87-4240-8a67-a3691e405382",
+  "fields": {
+    "city": "f870da8e-a72a-460c-bcbd-5ed8699cf397",
+    "name": "Hitec City",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "ac7ef6ff-f46b-4c10-8d4c-d33b7fb7aa37",
+  "fields": {
+    "city": "a5407e06-83d1-4e5b-a024-9b70028dbf8d",
+    "name": "Colaba",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "b790551b-837b-4f76-995d-4f7cbf8bd391",
+  "fields": {
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "name": "Whitefield",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "b80e0c80-9fd3-4d6f-a8fc-e0b553d0e40a",
+  "fields": {
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "name": "Nungambakkam",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "c06d6c00-34b3-4911-8e5e-cd65bb903318",
+  "fields": {
+    "city": "f870da8e-a72a-460c-bcbd-5ed8699cf397",
+    "name": "Gachibowli",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "da9e2f1e-aa27-48ac-a733-743a261c5dea",
+  "fields": {
+    "city": "a5407e06-83d1-4e5b-a024-9b70028dbf8d",
+    "name": "Juhu",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "ddfc7f78-16e0-478f-b9b3-60ba98937b5a",
+  "fields": {
+    "city": "a5407e06-83d1-4e5b-a024-9b70028dbf8d",
+    "name": "Bandra West",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "eb2520ae-0109-413f-8960-cb72a0891011",
+  "fields": {
+    "city": "383ab4fa-2757-4f20-a9c2-9b34b4cb08f3",
+    "name": "Vasant Vihar",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "edb86ec7-b8be-4f75-96c8-46e927bed96e",
+  "fields": {
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "name": "Alwarpet",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "f4f7a8f5-abd9-43f2-a736-8992fb123b44",
+  "fields": {
+    "city": "a5407e06-83d1-4e5b-a024-9b70028dbf8d",
+    "name": "Lower Parel",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "f926c309-9340-43a5-ba71-051ad6b3dede",
+  "fields": {
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "name": "T. Nagar",
+    "is_active": true
+  }
+},
+{
+  "model": "core.zone",
+  "pk": "feef4495-0176-44c4-a37f-bfebeb7743b3",
+  "fields": {
+    "city": "383ab4fa-2757-4f20-a9c2-9b34b4cb08f3",
+    "name": "Connaught Place",
+    "is_active": true
+  }
+},
+{
+  "model": "core.outlet",
+  "pk": "3389e920-ecd0-41ab-b42f-e5689c0a6fd2",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Roots Men’s Salon – Alpha",
+    "address_line": "1366, Saraki Village Road, SBI Colony, JP Nagar 1st Phase",
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "zone": "60e86225-386b-4834-9407-2434b3fa0e90",
+    "pincode": "560078",
+    "lat": "12.971600",
+    "lng": "77.594600",
+    "phone": "+917021795120",
+    "opening_time": "07:40:00",
+    "closing_time": "21:30:00",
+    "status": "active",
+    "invoice_prefix": "BLR1",
+    "created_at": "2026-11-12T10:51:39.718Z"
+  }
+},
+{
+  "model": "core.outlet",
+  "pk": "3c7e5df7-1827-470d-b7bf-bb0d81d2b06f",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "The New Look Men’s Saloon – Anna Nagar",
+    "address_line": "2nd Avenue, Anna Nagar, Chennai",
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "zone": "24cf7c08-fd85-4c11-8d77-6fb6754845e2",
+    "pincode": "600040",
+    "lat": "13.085000",
+    "lng": "80.210100",
+    "phone": "+919731212730",
+    "opening_time": "09:00:00",
+    "closing_time": "21:00:00",
+    "status": "active",
+    "invoice_prefix": "NL02",
+    "created_at": "2026-11-12T16:59:40.989Z"
+  }
+},
+{
+  "model": "core.outlet",
+  "pk": "99cd1485-0f00-4a89-b788-826151c80bbb",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "name": "The New Look Men’s Saloon – JP Nagar",
+    "address_line": "Shree Sai Vishwa Building, 7th Cross Road, JP Nagar 6th Phase, MG Layout",
+    "city": "6bb289ed-f16b-4ca1-9ca4-a34baa5468db",
+    "zone": "73b47a88-376c-4843-8814-c183fee279c3",
+    "pincode": "560078",
+    "lat": "12.971600",
+    "lng": "77.594600",
+    "phone": "+09731212730",
+    "opening_time": "07:30:00",
+    "closing_time": "21:00:00",
+    "status": "active",
+    "invoice_prefix": "THEN",
+    "created_at": "2026-11-12T10:41:51.463Z"
+  }
+},
+{
+  "model": "core.outlet",
+  "pk": "e7a3ec82-570d-4a14-844e-de22db6e0968",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "name": "Roots Men’s Salon – Nungambakkam",
+    "address_line": "Nungambakkam High Road, Chennai",
+    "city": "bda3a157-5ccb-4a7f-863c-9ca77fb38285",
+    "zone": "b80e0c80-9fd3-4d6f-a8fc-e0b553d0e40a",
+    "pincode": "600034",
+    "lat": "13.060400",
+    "lng": "80.244300",
+    "phone": "+919840256789",
+    "opening_time": "09:00:00",
+    "closing_time": "21:00:00",
+    "status": "active",
+    "invoice_prefix": "RT02",
+    "created_at": "2026-11-12T16:59:41.013Z"
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "0a80c00b-9d2c-4c94-9f89-c2ff0cb1ab5d",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Hair Spa",
+    "default_price_paise": 60000,
+    "duration_min": 45,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:58.054Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "46e7a240-6e79-4c4e-882d-fe7f78ad017f",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Hair Colour",
+    "default_price_paise": 100000,
+    "duration_min": 60,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:17.621Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "4a0113ec-be64-460a-a98b-908a46a076af",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Haircut + Beard",
+    "default_price_paise": 25000,
+    "duration_min": 45,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:17.636Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "62cc5cb2-6e2a-43bd-b423-b12e46eb1c26",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Head Massage",
+    "default_price_paise": 40000,
+    "duration_min": 30,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:58.063Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "7eb2fb3c-75b6-46a2-8264-4ef03336047f",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Haircut + Beard",
+    "default_price_paise": 40000,
+    "duration_min": 45,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:58.073Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "8c7b1333-6cb7-4f2f-9164-9384150930bf",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Normal Haircut",
+    "default_price_paise": 30000,
+    "duration_min": 30,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:58.003Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "a3097e7f-5e04-4b82-a244-5bfae078c8ec",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Stylish Haircut",
+    "default_price_paise": 35000,
+    "duration_min": 35,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:57.942Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "a32db299-0480-4756-9f07-f8e389951271",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Hair Wash",
+    "default_price_paise": 15000,
+    "duration_min": 15,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:57.966Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "b1854e1b-e570-46c0-a2d8-d0d2f28fe12b",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Test Roots Haircut",
+    "default_price_paise": 30000,
+    "duration_min": 30,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:29.145Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "be86ae01-cdd7-46dc-89e4-94f1be886056",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Beard Trim",
+    "default_price_paise": 10000,
+    "duration_min": 15,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:17.611Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "c4be77e5-09a8-43b7-9664-655129defcea",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Beard Trim",
+    "default_price_paise": 15000,
+    "duration_min": 20,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T14:47:25.790Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "c4d01d79-e4c4-4359-918c-130912b2332e",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Stylish Haircut",
+    "default_price_paise": 45000,
+    "duration_min": 40,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:58.013Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "d3b546d6-abba-4c09-bed7-09aeb0200066",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Clean Shave",
+    "default_price_paise": 15000,
+    "duration_min": 20,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:17.617Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "e35f23f4-c9cf-4d4f-92c4-a158fb34abbe",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Normal Haircut",
+    "default_price_paise": 25000,
+    "duration_min": 30,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:17.626Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "f4ded6f4-7c4d-42a5-90e3-3277b23a7c12",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Head Massage",
+    "default_price_paise": 30000,
+    "duration_min": 30,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:57.975Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "f532e66d-9eef-44c6-a1a7-196ce007d509",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "canonical_service": null,
+    "name": "Hair Spa",
+    "default_price_paise": 35000,
+    "duration_min": 45,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T11:21:17.631Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.storeservice",
+  "pk": "f870f49d-013b-4b83-9492-d9bdcc08eb3b",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "canonical_service": null,
+    "name": "Clean Shave",
+    "default_price_paise": 20000,
+    "duration_min": 20,
+    "deposit_percentage": 20,
+    "is_active_in_store": true,
+    "marketplace_status": "pending",
+    "submitted_at": "2026-11-12T16:07:58.035Z",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "review_note": null
+  }
+},
+{
+  "model": "core.professional",
+  "pk": "42542e4d-fd48-47af-92e8-7479ee5f7a0f",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "outlet": "99cd1485-0f00-4a89-b788-826151c80bbb",
+    "user_account": null,
+    "display_name": "Vasu (Demo)",
+    "display_role": null,
+    "phone_e164": null,
+    "email": null,
+    "gender": null,
+    "link_status": "accepted",
+    "is_bookable": true,
+    "invited_at": null,
+    "accepted_at": null,
+    "removed_at": null,
+    "created_at": "2026-11-12T11:01:41.906Z"
+  }
+},
+{
+  "model": "core.professional",
+  "pk": "88ae2802-2f9d-45fa-9c48-2327701f8726",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "c73b002e-91f8-4198-aae5-ba48847f0b62",
+    "outlet": "99cd1485-0f00-4a89-b788-826151c80bbb",
+    "user_account": null,
+    "display_name": "Sagar (Demo)",
+    "display_role": null,
+    "phone_e164": null,
+    "email": null,
+    "gender": null,
+    "link_status": "accepted",
+    "is_bookable": true,
+    "invited_at": null,
+    "accepted_at": null,
+    "removed_at": null,
+    "created_at": "2026-11-12T11:01:27.168Z"
+  }
+},
+{
+  "model": "core.professional",
+  "pk": "a3314535-cc94-4f50-b267-895dcb01bb61",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "outlet": "3389e920-ecd0-41ab-b42f-e5689c0a6fd2",
+    "user_account": null,
+    "display_name": "Fardeen (Demo)",
+    "display_role": null,
+    "phone_e164": null,
+    "email": null,
+    "gender": null,
+    "link_status": "invited",
+    "is_bookable": true,
+    "invited_at": null,
+    "accepted_at": null,
+    "removed_at": null,
+    "created_at": "2026-11-12T11:02:28.172Z"
+  }
+},
+{
+  "model": "core.professional",
+  "pk": "fef33226-c6fa-4f4f-a5ff-b771034d99d2",
+  "fields": {
+    "deleted_at": null,
+    "store_group": "d499d1e7-1618-4349-8c13-ef073e1f51cd",
+    "outlet": "3389e920-ecd0-41ab-b42f-e5689c0a6fd2",
+    "user_account": null,
+    "display_name": "Firoz (Demo)",
+    "display_role": null,
+    "phone_e164": null,
+    "email": null,
+    "gender": null,
+    "link_status": "invited",
+    "is_bookable": true,
+    "invited_at": null,
+    "accepted_at": null,
+    "removed_at": null,
+    "created_at": "2026-11-12T11:02:15.472Z"
+  }
+},
+{
+  "model": "core.globalcustomer",
+  "pk": "595f0188-8e62-4015-a581-4b8babc27132",
+  "fields": {
+    "deleted_at": null,
+    "phone_e164": "+919876543322",
+    "name": "919876543322@phone.nearbyme.local",
+    "email": "919876543322@phone.nearbyme.local",
+    "date_of_birth": null,
+    "gender": null,
+    "status": "active",
+    "is_global": true,
+    "created_at": "2026-11-12T11:11:10.826Z"
+  }
+}
+]
