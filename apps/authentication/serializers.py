@@ -21,6 +21,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         )
         return user
 class UserSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source='store.name', read_only=True)
+    outlet_name = serializers.CharField(source='outlet.name', read_only=True)
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'role', 'brand_id', 'store_id', 'outlet_id')
+        fields = ('id', 'email', 'first_name', 'last_name', 'role', 'brand_id', 'store_id', 'outlet_id', 'store_name', 'outlet_name')

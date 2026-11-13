@@ -61,6 +61,9 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
     def list(self, request, *args, **kwargs):
         from apps.core.models import CityMarketplaceFlag
         queryset = self.filter_queryset(self.get_queryset())
+        city_param = request.query_params.get('city')
+        if city_param:
+            queryset = queryset.filter(outlet__city__name__iexact=city_param.strip())
         dark_city_ids = set(
             CityMarketplaceFlag.objects.filter(is_public=False).values_list('city_id', flat=True)
         )
