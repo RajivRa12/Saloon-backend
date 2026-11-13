@@ -1077,7 +1077,7 @@ def custom_get_app_list(request, app_label=None):
             'Online payments', 'Queue entries', 'Slot holds',
         ],
         '👥 7. Store Staff & Legacy CRM': [
-            'Users', 'Staff availability', 'Membership tiers', 'Customer memberships', 'Coupons'
+            'Users', 'Professionals', 'Resources', 'Staff availability', 'Membership tiers', 'Customer memberships', 'Coupons'
         ],
         '📜 8. Universal Audit Trail & Governance': [
             'Audit logs', 'Platform Settings'
