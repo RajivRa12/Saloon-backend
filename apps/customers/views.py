@@ -1,5 +1,5 @@
 import logging
-from rest_framework import viewsets, generics
+from rest_framework import viewsets, generics, status
 from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
@@ -847,14 +847,38 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                     except (ValueError, TypeError):
                         pass
 
+            if not svc and request.data.get('service_name') and outlet and outlet.store_group:
+                svc = StoreService.objects.filter(
+                    store_group=outlet.store_group,
+                    name__iexact=str(request.data.get('service_name')).strip()
+                ).first()
+                if not svc:
+                    svc = StoreService.objects.filter(
+                        store_group=outlet.store_group,
+                        name__icontains=str(request.data.get('service_name')).strip()
+                    ).first()
+
             if not svc and outlet and outlet.store_group:
                 svc = StoreService.objects.filter(store_group=outlet.store_group, is_active_in_store=True).first()
+                if not svc:
+                    svc = StoreService.objects.filter(store_group=outlet.store_group).first()
 
             if not svc and store:
                 svc = StoreService.objects.filter(store_group=store.group_id, is_active_in_store=True).first() if hasattr(store, 'group_id') else None
 
             if not svc:
                 svc = StoreService.objects.filter(is_active_in_store=True).first()
+
+            if not svc and outlet and outlet.store_group:
+                from apps.core.models import CanonicalService
+                canonical = CanonicalService.objects.first()
+                svc = StoreService.objects.create(
+                    store_group=outlet.store_group,
+                    canonical_service=canonical,
+                    name=request.data.get('service_name') or "Salon Service",
+                    default_price_paise=int(round(float(request.data.get('amount') or 500) * 100)),
+                    is_active_in_store=True,
+                )
 
             if not svc:
                 return Response(
@@ -910,8 +934,6 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                 price_paise = int(svc.default_price_paise) if svc else 50000
 
             prof = Professional.objects.filter(outlet=outlet, is_bookable=True).first() if outlet else None
-            if not prof:
-                prof = Professional.objects.filter(is_bookable=True).first()
 
             with transaction.atomic():
                 booking = Booking.objects.create(
