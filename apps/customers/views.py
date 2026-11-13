@@ -113,11 +113,14 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
         return success_response(Phase1StoreServiceSerializer(services, many=True).data, f"Menu for {store.name}")
     @action(detail=True, methods=['get'], url_path='phase1-professionals')
     def phase1_professionals(self, request, pk=None):
+        from django.db import models
         from apps.core.models import Professional, ProfessionalLinkStatus, StoreService
         store = self.get_object()
         if not store.outlet_id:
             return error_response("Online booking is not available for this location yet.", 404)
-        qs = Professional.objects.filter(outlet_id=store.outlet_id, is_bookable=True, link_status=ProfessionalLinkStatus.ACCEPTED)
+        qs = Professional.objects.filter(
+            outlet_id=store.outlet_id, is_bookable=True
+        ).filter(models.Q(link_status=ProfessionalLinkStatus.ACCEPTED) | models.Q(link_status=ProfessionalLinkStatus.INVITED))
         skill_tag = None
         service_id = request.query_params.get('service_id')
         if service_id:
@@ -125,7 +128,9 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
             if svc and svc.canonical_service_id:
                 skill_tag = svc.canonical_service.skill_tag
         if skill_tag:
-            qs = qs.filter(skills__skill_tag=skill_tag)
+            filtered_qs = qs.filter(skills__skill_tag=skill_tag)
+            if filtered_qs.exists():
+                qs = filtered_qs
         return success_response(Phase1ProfessionalSerializer(qs.distinct(), many=True).data)
     @action(detail=True, methods=['get'], url_path='phase1-availability')
     def phase1_availability(self, request, pk=None):
