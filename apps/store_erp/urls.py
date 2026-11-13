@@ -11,10 +11,10 @@ from .views import (
     VendorViewSet,
     ProductViewSet,
     PurchaseOrderViewSet,
-    ExpenseViewSet,
+    # ExpenseViewSet (removed with Finance section)
     CommissionViewSet,
     DashboardViewSet,
-    ERPGiftCardViewSet,
+    # ERPGiftCardViewSet (removed with Finance section)
     ERPServicePackageViewSet,
     ERPCustomerPackageViewSet,
     RoomViewSet,
@@ -49,10 +49,10 @@ router.register(r'memberships', MembershipTierViewSet, basename='membership-tier
 router.register(r'vendors', VendorViewSet, basename='vendor')
 router.register(r'products', ProductViewSet, basename='product')
 router.register(r'purchase-orders', PurchaseOrderViewSet, basename='purchase-order')
-router.register(r'expenses', ExpenseViewSet, basename='expense')
+# router.register(r'expenses', ExpenseViewSet, basename='expense')  # Removed with Finance section
 router.register(r'commissions', CommissionViewSet, basename='commission')
 router.register(r'dashboard', DashboardViewSet, basename='dashboard')
-router.register(r'giftcards', ERPGiftCardViewSet, basename='erp-giftcard')
+# router.register(r'giftcards', ERPGiftCardViewSet, basename='erp-giftcard')  # Removed with Finance section
 router.register(r'service-packages', ERPServicePackageViewSet, basename='erp-service-package')
 router.register(r'customer-packages', ERPCustomerPackageViewSet, basename='erp-customer-package')
 router.register(r'rooms', RoomViewSet, basename='room')

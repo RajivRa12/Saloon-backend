@@ -9,7 +9,7 @@ from .models import (
     Appointment, AppointmentItem,
     Invoice, Payment,
     MembershipTier, CustomerMembership,
-    PurchaseOrder, PurchaseOrderItem, Expense, StaffIncentive,
+    PurchaseOrder, PurchaseOrderItem, StaffIncentive,
     InternalUser, City, Zone, Plan, AccessCode, AccessCodeRedemption,
     StoreGroup, StoreStatusHistory, KycDocument, KycDocStatus, Outlet,
     BankSettlementAccount,
@@ -389,11 +389,6 @@ class PurchaseOrderAdmin(admin.ModelAdmin):
     list_display = ('id', 'vendor', 'store', 'outlet', 'status', 'total_amount', 'order_date')
     list_filter = ('status', 'store', 'outlet')
     inlines = [PurchaseOrderItemInline]
-@admin.register(Expense)
-class ExpenseAdmin(admin.ModelAdmin):
-    list_display = ('category', 'amount', 'store', 'outlet', 'date_incurred')
-    list_filter = ('category', 'store', 'outlet')
-    date_hierarchy = 'date_incurred'
 @admin.register(StaffIncentive)
 class StaffIncentiveAdmin(admin.ModelAdmin):
     list_display = ('title', 'staff', 'store', 'outlet', 'amount', 'is_paid_out', 'created_at')
@@ -544,20 +539,6 @@ class OutletPurchaseOrderInline(admin.TabularInline):
     def has_add_permission(self, request, obj=None): return False
     def has_change_permission(self, request, obj=None): return False
     def has_delete_permission(self, request, obj=None): return False
-class OutletExpenseInline(admin.TabularInline):
-    model = Expense
-    fields = ('category', 'amount', 'date_incurred', 'description')
-    readonly_fields = ('category', 'amount', 'date_incurred', 'description')
-    extra = 0
-    max_num = 0
-    verbose_name = "Operational Expense"
-    verbose_name_plural = "Recent Operational Expenses (Branch Preview — Read Only)"
-    show_change_link = True
-    can_delete = False
-    def get_queryset(self, request): return super().get_queryset(request).order_by('-date_incurred')
-    def has_add_permission(self, request, obj=None): return False
-    def has_change_permission(self, request, obj=None): return False
-    def has_delete_permission(self, request, obj=None): return False
 class OutletIncentiveInline(admin.TabularInline):
     model = StaffIncentive
     fields = ('title', 'staff', 'amount', 'is_paid_out', 'created_at')
@@ -688,7 +669,7 @@ class OutletAdmin(admin.ModelAdmin):
     inlines = [
         OutletBookingInline, OutletStaffInline, OutletAppointmentInline, OutletInvoiceInline,
         OutletProductInline, OutletVendorInline, OutletPurchaseOrderInline,
-        OutletExpenseInline, OutletRoomInline, OutletShiftInline,
+        OutletRoomInline, OutletShiftInline,
         OutletAttendanceInline, OutletLeaveRequestInline, OutletPayrollInline,
         OutletIncentiveInline, OutletDailyRegisterInline, OutletCampaignInline
     ]
@@ -1092,7 +1073,7 @@ def custom_get_app_list(request, app_label=None):
             'Global customers', 'Customer store links', 'Customer consents', 'Customer merge logs', 'Customer favourites'
         ],
         '📊 6. Store ERP & Daily Branch Operations': [
-            'Bookings', 'Appointment slots', 'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Expenses', 'Staff incentives',
+            'Bookings', 'Appointment slots', 'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Staff incentives',
             'Online payments', 'Queue entries', 'Slot holds',
         ],
         '👥 7. Store Staff & Legacy CRM': [
