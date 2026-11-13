@@ -600,8 +600,8 @@ class StoreServiceLiteSerializer(serializers.ModelSerializer):
     skill_tag = serializers.CharField(source='canonical_service.skill_tag', read_only=True, default=None)
     class Meta:
         model = StoreService
-        fields = ['id', 'name', 'default_price_paise', 'duration_min', 'category_name', 'skill_tag']
-        read_only_fields = fields
+        fields = ['id', 'name', 'default_price_paise', 'duration_min', 'category_name', 'skill_tag', 'is_active_in_store', 'deposit_percentage']
+        read_only_fields = ['id', 'category_name', 'skill_tag']
 class GlobalCustomerLiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = GlobalCustomer

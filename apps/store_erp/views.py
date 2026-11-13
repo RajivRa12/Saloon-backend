@@ -1636,15 +1636,139 @@ class ResourceViewSet(viewsets.ModelViewSet):
         return Resource.objects.filter(outlet_id=self.request.user.outlet_id)
     def perform_create(self, serializer):
         serializer.save(outlet=self.request.user.outlet)
-from apps.core.models import StoreService, GlobalCustomer, normalize_e164
+from apps.core.models import StoreService, GlobalCustomer, normalize_e164, StoreServiceMarketplaceStatus
 from .serializers import StoreServiceLiteSerializer, GlobalCustomerLiteSerializer, CustomerLookupSerializer
+
+class CanonicalServicesListView(APIView):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    def get(self, request):
+        from apps.core.models import CanonicalService
+        canonical = CanonicalService.objects.filter(is_active=True).select_related('category').order_by('category__name', 'name')
+        data = [
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "category_id": str(c.category_id) if c.category_id else None,
+                "category_name": c.category.name if c.category else "General",
+                "default_duration_min": c.default_duration_min,
+                "skill_tag": c.skill_tag,
+            }
+            for c in canonical
+        ]
+        return success_response(data, "Canonical services fetched")
+
 class StoreServiceListView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     def get(self, request):
-        services = StoreService.objects.filter(
-            store_group_id=request.user.outlet.store_group_id, is_active_in_store=True
-        ).select_related('canonical_service', 'canonical_service__category')
+        outlet = getattr(request.user, 'outlet', None)
+        if not outlet and hasattr(request.user, 'store') and request.user.store:
+            outlet = request.user.store.outlet
+        if not outlet or not outlet.store_group_id:
+            return success_response([], "No store group linked")
+
+        include_inactive = request.query_params.get('all') == 'true' or request.query_params.get('include_inactive') == 'true'
+        qs = StoreService.objects.filter(store_group_id=outlet.store_group_id)
+        if not include_inactive:
+            qs = qs.filter(is_active_in_store=True)
+
+        services = qs.select_related('canonical_service', 'canonical_service__category').order_by('name')
         return success_response(StoreServiceLiteSerializer(services, many=True).data)
+
+    def post(self, request):
+        outlet = getattr(request.user, 'outlet', None)
+        if not outlet and hasattr(request.user, 'store') and request.user.store:
+            outlet = request.user.store.outlet
+        if not outlet or not outlet.store_group_id:
+            return error_response("Your account is not linked to an active store outlet.", 400)
+
+        name = request.data.get('name')
+        if not name or not str(name).strip():
+            return error_response("Service name is required.", 400)
+
+        price = request.data.get('price')
+        if price is not None and str(price).strip() != "":
+            try:
+                price_paise = int(round(float(price) * 100))
+            except (ValueError, TypeError):
+                price_paise = int(request.data.get('default_price_paise') or 50000)
+        else:
+            price_paise = int(request.data.get('default_price_paise') or 50000)
+
+        duration_min = int(request.data.get('duration_min') or request.data.get('duration') or 45)
+        canonical_id = request.data.get('canonical_service_id')
+        canonical = None
+        if canonical_id:
+            from apps.core.models import CanonicalService
+            canonical = CanonicalService.objects.filter(id=canonical_id).first()
+        if not canonical:
+            from apps.core.models import CanonicalService
+            canonical = CanonicalService.objects.first()
+
+        deposit_pct = int(request.data.get('deposit_percentage') or 20)
+        svc = StoreService.objects.create(
+            store_group_id=outlet.store_group_id,
+            canonical_service=canonical,
+            name=str(name).strip(),
+            default_price_paise=price_paise,
+            duration_min=duration_min,
+            deposit_percentage=deposit_pct,
+            is_active_in_store=True,
+            marketplace_status=StoreServiceMarketplaceStatus.APPROVED,
+        )
+        return success_response(StoreServiceLiteSerializer(svc).data, "Service created successfully", status_code=201)
+
+class StoreServiceDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsOutletStaff]
+    def patch(self, request, pk):
+        outlet = getattr(request.user, 'outlet', None)
+        if not outlet and hasattr(request.user, 'store') and request.user.store:
+            outlet = request.user.store.outlet
+        if not outlet or not outlet.store_group_id:
+            return error_response("Your account is not linked to an active store outlet.", 400)
+
+        svc = StoreService.objects.filter(id=pk, store_group_id=outlet.store_group_id).first()
+        if not svc:
+            return error_response("Service not found.", 404)
+
+        if 'name' in request.data and str(request.data['name']).strip():
+            svc.name = str(request.data['name']).strip()
+        if 'price' in request.data and str(request.data['price']).strip() != "":
+            try:
+                svc.default_price_paise = int(round(float(request.data['price']) * 100))
+            except (ValueError, TypeError):
+                pass
+        elif 'default_price_paise' in request.data:
+            svc.default_price_paise = int(request.data['default_price_paise'])
+
+        if 'duration_min' in request.data:
+            svc.duration_min = int(request.data['duration_min'])
+        if 'is_active_in_store' in request.data:
+            svc.is_active_in_store = bool(request.data['is_active_in_store'])
+        if 'deposit_percentage' in request.data:
+            svc.deposit_percentage = int(request.data['deposit_percentage'])
+        if 'canonical_service_id' in request.data and request.data['canonical_service_id']:
+            from apps.core.models import CanonicalService
+            can = CanonicalService.objects.filter(id=request.data['canonical_service_id']).first()
+            if can:
+                svc.canonical_service = can
+
+        svc.save()
+        return success_response(StoreServiceLiteSerializer(svc).data, "Service updated successfully")
+
+    def delete(self, request, pk):
+        outlet = getattr(request.user, 'outlet', None)
+        if not outlet and hasattr(request.user, 'store') and request.user.store:
+            outlet = request.user.store.outlet
+        if not outlet or not outlet.store_group_id:
+            return error_response("Your account is not linked to an active store outlet.", 400)
+
+        svc = StoreService.objects.filter(id=pk, store_group_id=outlet.store_group_id).first()
+        if not svc:
+            return error_response("Service not found.", 404)
+
+        svc.is_active_in_store = False
+        svc.save(update_fields=['is_active_in_store'])
+        return success_response({"id": str(pk)}, "Service deactivated successfully")
 class CustomerLookupView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     def post(self, request):
