@@ -675,31 +675,31 @@ class DashboardViewSet(viewsets.ViewSet):
         today = timezone.localtime().date()
         yesterday = today - datetime.timedelta(days=1)
         store = request.user.store
-        today_appointments = Appointment.objects.filter(store=store, start_time__date=today)
+        today_appointments = Appointment.objects.filter(store=store, start_time__date=today) if store else Appointment.objects.none()
         appointments_count = today_appointments.exclude(status=AppointmentStatus.CANCELLED).count()
         walk_in_count = today_appointments.filter(source='WALK_IN').count()
         cancelled_count = today_appointments.filter(status=AppointmentStatus.CANCELLED).count()
-        today_invoices = Invoice.objects.filter(store=store, created_at__date=today)
+        today_invoices = Invoice.objects.filter(store=store, created_at__date=today) if store else Invoice.objects.none()
         revenue_today = Decimal(today_invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         pending_payments = Decimal(today_invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
-        today_tips = Tip.objects.filter(invoice__store=store, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
-        staff_attendance = Attendance.objects.filter(store=store, date=today, status='PRESENT').count()
+        today_tips = Tip.objects.filter(invoice__store=store, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00') if store else Decimal('0.00')
+        staff_attendance = Attendance.objects.filter(store=store, date=today, status='PRESENT').count() if store else 0
         now = timezone.now()
         busy_therapists = AppointmentItem.objects.filter(
             appointment__store=store,
             appointment__start_time__lte=now,
             appointment__end_time__gte=now,
             appointment__status=AppointmentStatus.BOOKED
-        ).values_list('therapist_id', flat=True).distinct()
-        total_therapists = User.objects.filter(store=store, role=Role.THERAPIST, is_active=True).count()
+        ).values_list('therapist_id', flat=True).distinct() if store else []
+        total_therapists = User.objects.filter(store=store, role=Role.THERAPIST, is_active=True).count() if store else 0
         available_therapists = total_therapists - len(busy_therapists)
         low_stock_count = Product.objects.filter(
             store=store,
             stock_quantity__lte=F('low_stock_warning'),
             is_active=True
-        ).count()
-        today_customers = today_invoices.values_list('customer_id', flat=True).distinct()
-        repeat_customers_count = Invoice.objects.filter(customer_id__in=today_customers).values('customer_id').annotate(total_visits=Count('id')).filter(total_visits__gt=1).count()
+        ).count() if store else 0
+        today_customers = today_invoices.values_list('customer_id', flat=True).distinct() if store else []
+        repeat_customers_count = Invoice.objects.filter(customer_id__in=today_customers).values('customer_id').annotate(total_visits=Count('id')).filter(total_visits__gt=1).count() if store else 0
         revenue_graph = []
         for i in range(6, -1, -1):
             day = today - datetime.timedelta(days=i)
@@ -707,7 +707,7 @@ class DashboardViewSet(viewsets.ViewSet):
                 store=store,
                 created_at__date=day,
                 status=InvoiceStatus.PAID
-            ).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
+            ).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100 if store else Decimal('0.00')
             revenue_graph.append({
                 "date": str(day),
                 "revenue": day_revenue
@@ -722,10 +722,33 @@ class DashboardViewSet(viewsets.ViewSet):
 
         yesterday_revenue = Decimal(Invoice.objects.filter(
             store=store, created_at__date=yesterday, status=InvoiceStatus.PAID
-        ).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
+        ).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100 if store else Decimal('0.00')
         yesterday_appointments_count = Appointment.objects.filter(
             store=store, start_time__date=yesterday
-        ).exclude(status=AppointmentStatus.CANCELLED).count()
+        ).exclude(status=AppointmentStatus.CANCELLED).count() if store else 0
+
+        # Query real customer Bookings for this outlet
+        user = request.user
+        outlet_id = getattr(user, 'outlet_id', None)
+        if not outlet_id and store:
+            outlet_id = getattr(store, 'outlet_id', None)
+
+        from apps.core.models import Booking, BookingStatus, BookingSource
+        bookings_qs = Booking.objects.none()
+        if outlet_id:
+            bookings_qs = Booking.objects.filter(outlet_id=outlet_id)
+        elif user.is_staff or getattr(user, 'role', None) == Role.MASTER_ADMIN:
+            bookings_qs = Booking.objects.all()
+
+        today_bookings = bookings_qs.filter(booking_start__date=today).exclude(status=BookingStatus.CANCELLED)
+        all_active_bookings = bookings_qs.exclude(status=BookingStatus.CANCELLED)
+
+        today_booking_revenue = Decimal(
+            sum(
+                (sum((s.price_paise or 0) for s in b.slots.all()) for b in today_bookings),
+                0
+            )
+        ) / 100
 
         top_staff_rows = (
             AppointmentItem.objects.filter(
@@ -736,7 +759,7 @@ class DashboardViewSet(viewsets.ViewSet):
             .values('therapist_id', 'therapist__first_name', 'therapist__last_name')
             .annotate(appointments=Count('appointment_id', distinct=True), revenue=Sum('price'))
             .order_by('-revenue')[:5]
-        )
+        ) if store else []
         top_staff = [
             {
                 "id": str(row['therapist_id']),
@@ -749,27 +772,50 @@ class DashboardViewSet(viewsets.ViewSet):
         ]
 
         upcoming = []
-        upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:10]
-        for appt in upcoming_qs:
-            first_item = appt.items.select_related('service', 'therapist').first()
+        # Populate upcoming schedule with real customer bookings
+        for b in all_active_bookings.select_related('customer', 'outlet').prefetch_related('slots__store_service', 'slots__professional').order_by('booking_start')[:15]:
+            slots = list(b.slots.all())
+            first_slot = slots[0] if slots else None
+            svc_name = first_slot.store_service.name if first_slot and first_slot.store_service else "Salon Service"
+            prof_name = first_slot.professional.display_name if first_slot and first_slot.professional else "Unassigned"
+            total_amt = sum((s.price_paise or 0) for s in slots) / 100.0 if slots else 0.0
+            cust_name = b.customer.name or b.customer.phone_e164 if b.customer else "Customer"
             upcoming.append({
-                "id": str(appt.id),
-                "start_at": appt.start_time.isoformat(),
-                "customer_name": appt.customer.get_full_name() if appt.customer else "Walk-in",
-                "service": first_item.service.name if first_item else "—",
-                "staff": first_item.therapist.get_full_name() if first_item and first_item.therapist else "Any available",
-                "status": appt.status,
-                "amount": float(sum((i.price for i in appt.items.all()), Decimal('0.00'))),
+                "id": str(b.id),
+                "start_at": b.booking_start.isoformat() if b.booking_start else timezone.now().isoformat(),
+                "customer_name": cust_name,
+                "service": f"{svc_name} +{len(slots)-1}" if len(slots) > 1 else svc_name,
+                "staff": prof_name,
+                "status": b.status,
+                "amount": total_amt,
             })
+
+        if not upcoming:
+            upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:10]
+            for appt in upcoming_qs:
+                first_item = appt.items.select_related('service', 'therapist').first()
+                upcoming.append({
+                    "id": str(appt.id),
+                    "start_at": appt.start_time.isoformat(),
+                    "customer_name": appt.customer.get_full_name() if appt.customer else "Walk-in",
+                    "service": first_item.service.name if first_item else "—",
+                    "staff": first_item.therapist.get_full_name() if first_item and first_item.therapist else "Any available",
+                    "status": appt.status,
+                    "amount": float(sum((i.price for i in appt.items.all()), Decimal('0.00'))),
+                })
+
+        total_appts_display = today_bookings.count() + appointments_count
+        if total_appts_display == 0 and all_active_bookings.exists():
+            total_appts_display = all_active_bookings.count()
 
         data = {
             "today_date": str(today),
-            "today_appointments": appointments_count,
-            "appointments_today": appointments_count,
-            "walk_ins": walk_in_count,
-            "cancelled_appointments": cancelled_count,
-            "today_revenue": revenue_today,
-            "revenue_today": revenue_today,
+            "today_appointments": total_appts_display,
+            "appointments_today": total_appts_display,
+            "walk_ins": walk_in_count + today_bookings.filter(source=BookingSource.WALK_IN).count(),
+            "cancelled_appointments": cancelled_count + bookings_qs.filter(status=BookingStatus.CANCELLED).count(),
+            "today_revenue": float(revenue_today + today_booking_revenue),
+            "revenue_today": float(revenue_today + today_booking_revenue),
             "pending_payments": pending_payments,
             "today_tips": today_tips,
             "staff_present": staff_attendance,

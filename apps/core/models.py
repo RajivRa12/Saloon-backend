@@ -343,6 +343,8 @@ class Appointment(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         ordering = ['-start_time']
+        verbose_name = "Legacy Appointment (Old)"
+        verbose_name_plural = "Legacy Appointments (Old Archive)"
     def __str__(self):
         return f"Appt {self.id} at {self.store.name} ({self.start_time})"
 class AppointmentItem(models.Model):
@@ -1606,6 +1608,8 @@ class Booking(SoftDeleteModel):
     class Meta:
         db_table = 'booking'
         ordering = ['-booking_start']
+        verbose_name = "Booking / Appointment"
+        verbose_name_plural = "Bookings & Appointments (Master Admin)"
 
     def clean(self):
         super().clean()

@@ -462,6 +462,25 @@ class StoreStatusHistoryAdmin(admin.ModelAdmin):
         return False
     def has_change_permission(self, request, obj=None):
         return False
+class OutletBookingInline(admin.TabularInline):
+    model = Booking
+    fields = ('booking_code', 'customer', 'status', 'source', 'booking_start', 'booking_end')
+    readonly_fields = ('booking_code', 'customer', 'status', 'source', 'booking_start', 'booking_end')
+    extra = 0
+    max_num = 0
+    verbose_name = "Customer Booking"
+    verbose_name_plural = "Customer Bookings (Live & Previous Bookings)"
+    show_change_link = True
+    can_delete = False
+    def get_queryset(self, request):
+        return super().get_queryset(request).order_by('-booking_start')
+    def has_add_permission(self, request, obj=None):
+        return False
+    def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 class OutletAppointmentInline(admin.TabularInline):
     model = Appointment
     fields = ('customer', 'start_time', 'end_time', 'status')
@@ -667,7 +686,7 @@ class OutletAdmin(admin.ModelAdmin):
         'invoice_prefix',
     )
     inlines = [
-        OutletStaffInline, OutletAppointmentInline, OutletInvoiceInline,
+        OutletBookingInline, OutletStaffInline, OutletAppointmentInline, OutletInvoiceInline,
         OutletProductInline, OutletVendorInline, OutletPurchaseOrderInline,
         OutletExpenseInline, OutletRoomInline, OutletShiftInline,
         OutletAttendanceInline, OutletLeaveRequestInline, OutletPayrollInline,
@@ -796,12 +815,36 @@ class BookingAdminForm(forms.ModelForm):
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
     form = BookingAdminForm
-    list_display = ('booking_code', 'id', 'outlet', 'customer', 'source', 'status', 'booking_start', 'booking_end')
-    list_filter = ('status', 'source', 'outlet')
-    search_fields = ('booking_code', 'id', 'customer__name', 'customer__phone_e164')
+    list_display = (
+        'booking_code', 'outlet', 'customer', 'get_services', 'get_specialist',
+        'get_amount', 'status', 'source', 'booking_start'
+    )
+    list_filter = ('status', 'source', 'outlet', 'booking_start')
+    date_hierarchy = 'booking_start'
+    ordering = ('-booking_start',)
+    search_fields = ('booking_code', 'id', 'customer__name', 'customer__phone_e164', 'slots__store_service__name', 'slots__professional__display_name')
     readonly_fields = ('booking_code', 'deleted_at', 'cancelled_at')
     inlines = [AppointmentSlotInline]
     actions = ['cancel_bookings']
+
+    @admin.display(description="Services")
+    def get_services(self, obj):
+        slots = list(obj.slots.select_related('store_service').all())
+        if not slots:
+            return "—"
+        names = [s.store_service.name for s in slots if s.store_service]
+        return ", ".join(names) or "—"
+
+    @admin.display(description="Professional")
+    def get_specialist(self, obj):
+        slots = list(obj.slots.select_related('professional').all())
+        profs = [s.professional.display_name for s in slots if s.professional]
+        return ", ".join(profs) or "Unassigned"
+
+    @admin.display(description="Total (₹)")
+    def get_amount(self, obj):
+        paise = sum((s.price_paise or 0) for s in obj.slots.all())
+        return f"₹{paise / 100:.2f}"
 
     def save_model(self, request, obj, form, change):
         if obj.status == 'cancelled':
@@ -957,12 +1000,32 @@ class CampaignAdmin(admin.ModelAdmin):
     search_fields = ('name', 'store_group__name')
     readonly_fields = ('deleted_at', 'status', 'sent_at')
     inlines = [CampaignSendInline]
+class CustomerBookingInline(admin.TabularInline):
+    model = Booking
+    fields = ('booking_code', 'outlet', 'status', 'source', 'booking_start', 'booking_end')
+    readonly_fields = ('booking_code', 'outlet', 'status', 'source', 'booking_start', 'booking_end')
+    extra = 0
+    max_num = 0
+    verbose_name = "Previous Booking"
+    verbose_name_plural = "Previous & Upcoming Customer Bookings"
+    show_change_link = True
+    can_delete = False
+    def get_queryset(self, request):
+        return super().get_queryset(request).order_by('-booking_start')
+    def has_add_permission(self, request, obj=None):
+        return False
+    def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 @admin.register(GlobalCustomer)
 class GlobalCustomerAdmin(admin.ModelAdmin):
     list_display = ('name', 'phone_e164', 'status', 'is_global', 'created_at')
     list_filter = ('status', 'is_global')
     search_fields = ('name', 'phone_e164', 'email')
     readonly_fields = ('deleted_at',)
+    inlines = [CustomerBookingInline]
 @admin.register(CustomerStoreLink)
 class CustomerStoreLinkAdmin(admin.ModelAdmin):
     list_display = ('customer', 'store_group', 'visit_count', 'lifetime_spend_paise', 'lifecycle_stage', 'last_visit_at')

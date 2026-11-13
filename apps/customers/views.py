@@ -933,7 +933,15 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
             else:
                 price_paise = int(svc.default_price_paise) if svc else 50000
 
-            prof = Professional.objects.filter(outlet=outlet, is_bookable=True).first() if outlet else None
+            professional_id = request.data.get('professional_id')
+            prof = None
+            if professional_id:
+                try:
+                    prof = Professional.objects.filter(id=professional_id, outlet=outlet, is_bookable=True).first()
+                except Exception:
+                    prof = None
+            if not prof:
+                prof = Professional.objects.filter(outlet=outlet, is_bookable=True).first() if outlet else None
 
             with transaction.atomic():
                 booking = Booking.objects.create(
