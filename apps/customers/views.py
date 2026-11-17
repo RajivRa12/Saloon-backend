@@ -719,6 +719,7 @@ class CustomerConversationViewSet(viewsets.ModelViewSet):
         ctx = super().get_serializer_context()
         ctx['request'] = self.request
         return ctx
+
     def create(self, request, *args, **kwargs):
         therapist_id = request.data.get('therapist_id')
         if not therapist_id:
@@ -798,6 +799,56 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
         if user.email:
             return GlobalCustomer.objects.filter(email=user.email).first()
         return None
+
+    @staticmethod
+    def _resolve_service_for_item(outlet, item_id=None, item_name=None, default_price_paise=50000):
+        import uuid
+        from apps.core.models import StoreService, Service, CanonicalService
+        svc = None
+        store_group = getattr(outlet, 'store_group', None) if outlet else None
+
+        # 1. By ID
+        if item_id:
+            try:
+                val = uuid.UUID(str(item_id))
+                if store_group:
+                    svc = StoreService.objects.filter(id=val, store_group=store_group).first()
+                if not svc:
+                    svc = StoreService.objects.filter(id=val).first()
+            except (ValueError, TypeError):
+                cleaned = str(item_id).replace('svc-', '').strip()
+                if cleaned.isdigit():
+                    legacy = Service.objects.filter(id=int(cleaned)).first()
+                    if legacy and store_group:
+                        svc = StoreService.objects.filter(store_group=store_group, name__iexact=legacy.name).first()
+
+        # 2. By Name
+        clean_name = str(item_name).strip() if item_name else ""
+        if not svc and clean_name:
+            if store_group:
+                svc = (
+                    StoreService.objects.filter(store_group=store_group, name__iexact=clean_name).first()
+                    or StoreService.objects.filter(store_group=store_group, name__icontains=clean_name).first()
+                )
+            if not svc:
+                svc = StoreService.objects.filter(name__iexact=clean_name).first()
+
+        # 3. Create on the fly if named and not found
+        if not svc and clean_name and store_group:
+            canonical = CanonicalService.objects.filter(name__iexact=clean_name).first() or CanonicalService.objects.first()
+            svc = StoreService.objects.create(
+                store_group=store_group,
+                canonical_service=canonical,
+                name=clean_name,
+                default_price_paise=default_price_paise,
+                is_active_in_store=True,
+            )
+
+        # 4. Fallback to any active service in store group
+        if not svc and store_group:
+            svc = StoreService.objects.filter(store_group=store_group, is_active_in_store=True).first()
+
+        return svc
 
     def create(self, request, *args, **kwargs):
         from datetime import timedelta, datetime
@@ -962,36 +1013,49 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                 )
 
                 services_list = request.data.get('services') or request.data.get('items') or []
-                if isinstance(services_list, list) and len(services_list) > 1:
-                    current_start = slot_start
-                    for item in services_list:
-                        item_id = item.get('id') or item.get('service_id')
-                        item_svc = StoreService.objects.filter(id=item_id, store_group=outlet.store_group).first() if item_id else None
-                        item_dur = int(item.get('duration') or item.get('duration_minutes') or 30)
-                        item_end = current_start + timedelta(minutes=item_dur)
-                        item_price = int(round(float(item.get('price') or 0) * 100))
-                        AppointmentSlot.objects.create(
-                            booking=booking,
-                            store_service=item_svc or svc,
-                            professional=prof,
-                            slot_start=current_start,
-                            slot_end=item_end,
-                            price_paise=item_price if item_price > 0 else (price_paise // len(services_list)),
-                            status=AppointmentSlotStatus.SCHEDULED,
-                        )
-                        current_start = item_end
-                    booking.booking_end = current_start
-                    booking.save(update_fields=['booking_end'])
-                else:
+                if not isinstance(services_list, list) or len(services_list) == 0:
+                    req_sname = request.data.get('service_name') or "Salon Service"
+                    if "+" in req_sname:
+                        sub_names = [s.strip() for s in req_sname.split("+") if s.strip()]
+                        services_list = [{'id': None, 'name': sn, 'price': (price_paise // len(sub_names)) / 100, 'duration_minutes': 30} for sn in sub_names]
+                    else:
+                        services_list = [{
+                            'id': request.data.get('service_id'),
+                            'name': req_sname,
+                            'price': (price_paise / 100),
+                            'duration_minutes': duration,
+                        }]
+
+                current_start = slot_start
+                for item in services_list:
+                    item_id = item.get('id') or item.get('service_id')
+                    item_name = (item.get('name') or item.get('service_name') or '').strip()
+                    item_dur = int(item.get('duration') or item.get('duration_minutes') or 30)
+                    item_end = current_start + timedelta(minutes=item_dur)
+                    item_price = int(round(float(item.get('price') or 0) * 100))
+                    if item_price <= 0:
+                        item_price = price_paise // len(services_list)
+
+                    item_svc = self._resolve_service_for_item(
+                        outlet=outlet,
+                        item_id=item_id,
+                        item_name=item_name,
+                        default_price_paise=item_price,
+                    )
+
                     AppointmentSlot.objects.create(
                         booking=booking,
-                        store_service=svc,
+                        store_service=item_svc or svc,
                         professional=prof,
-                        slot_start=slot_start,
-                        slot_end=slot_end,
-                        price_paise=price_paise,
+                        slot_start=current_start,
+                        slot_end=item_end,
+                        price_paise=item_price,
                         status=AppointmentSlotStatus.SCHEDULED,
                     )
+                    current_start = item_end
+
+                booking.booking_end = current_start
+                booking.save(update_fields=['booking_end'])
 
             booking.refresh_from_db()
             return success_response(CustomerBookingSerializer(booking).data, "Appointment booked successfully.", status_code=201)
