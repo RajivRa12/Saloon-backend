@@ -822,15 +822,28 @@ class DashboardViewSet(viewsets.ViewSet):
         for b in all_active_bookings.select_related('customer', 'outlet').prefetch_related('slots__store_service', 'slots__professional').order_by('booking_start')[:15]:
             slots = list(b.slots.all())
             first_slot = slots[0] if slots else None
-            svc_name = first_slot.store_service.name if first_slot and first_slot.store_service else "Salon Service"
+            if len(slots) > 1:
+                svc_names = [s.store_service.name for s in slots if s.store_service]
+                svc_name = " + ".join(svc_names) if svc_names else "Salon Service"
+            else:
+                svc_name = first_slot.store_service.name if first_slot and first_slot.store_service else "Salon Service"
             prof_name = first_slot.professional.display_name if first_slot and first_slot.professional else "Unassigned"
             total_amt = sum((s.price_paise or 0) for s in slots) / 100.0 if slots else 0.0
             cust_name = b.customer.name or b.customer.phone_e164 if b.customer else "Customer"
+            if cust_name and '@phone.nearbyme.local' in cust_name:
+                raw_p = cust_name.replace('@phone.nearbyme.local', '')
+                if len(raw_p) == 12 and raw_p.startswith('91'):
+                    ten = raw_p[2:]
+                    cust_name = f"+91 {ten[:5]} {ten[5:]}"
+                elif len(raw_p) == 10:
+                    cust_name = f"+91 {raw_p[:5]} {raw_p[5:]}"
+                else:
+                    cust_name = f"+{raw_p}"
             upcoming.append({
                 "id": str(b.id),
                 "start_at": b.booking_start.isoformat() if b.booking_start else timezone.now().isoformat(),
                 "customer_name": cust_name,
-                "service": f"{svc_name} +{len(slots)-1}" if len(slots) > 1 else svc_name,
+                "service": svc_name,
                 "staff": prof_name,
                 "status": b.status,
                 "amount": total_amt,

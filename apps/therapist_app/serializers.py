@@ -125,7 +125,17 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
         if not obj.booking.customer_id:
             return None
         c = obj.booking.customer
-        return c.name or c.phone_e164 or c.email
+        name = c.name or ''
+        phone = c.phone_e164 or ''
+        if not name or '@phone.nearbyme.local' in name:
+            raw_p = phone or (name.split('@')[0] if name else "")
+            if len(raw_p) == 12 and raw_p.startswith('91'):
+                ten = raw_p[2:]
+                return f"+91 {ten[:5]} {ten[5:]}"
+            elif len(raw_p) == 10:
+                return f"+91 {raw_p[:5]} {raw_p[5:]}"
+            return raw_p or "Customer"
+        return name
 
     def get_store_service_name(self, obj):
         if obj.booking_id:
