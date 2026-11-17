@@ -104,14 +104,16 @@ class CommissionAccrualSerializer(serializers.ModelSerializer):
 class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
     outlet_name = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
-    store_service_name = serializers.CharField(source='store_service.name', read_only=True)
+    store_service_name = serializers.SerializerMethodField()
+    items = serializers.SerializerMethodField()
+    notes = serializers.CharField(source='booking.notes', read_only=True)
     is_home_service = serializers.BooleanField(source='booking.is_home_service', read_only=True)
     service_address = serializers.CharField(source='booking.service_address', read_only=True)
     on_the_way_at = serializers.DateTimeField(source='booking.on_the_way_at', read_only=True)
     class Meta:
         model = AppointmentSlot
         fields = [
-            'id', 'booking', 'store_service_name', 'outlet_name', 'customer_name', 'slot_start', 'slot_end',
+            'id', 'booking', 'store_service_name', 'items', 'notes', 'outlet_name', 'customer_name', 'slot_start', 'slot_end',
             'actual_start_time', 'actual_end_time', 'start_variance_minutes', 'end_variance_minutes',
             'override_reason', 'was_overridden',
             'price_paise', 'status', 'is_home_service', 'service_address', 'on_the_way_at',
@@ -120,4 +122,38 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
     def get_outlet_name(self, obj):
         return obj.booking.outlet.name
     def get_customer_name(self, obj):
-        return obj.booking.customer.name if obj.booking.customer_id else None
+        if not obj.booking.customer_id:
+            return None
+        c = obj.booking.customer
+        return c.name or c.phone_e164 or c.email
+
+    def get_store_service_name(self, obj):
+        if obj.booking_id:
+            sibling_slots = obj.booking.slots.select_related('store_service').all()
+            if sibling_slots.count() > 1:
+                names = [s.store_service.name for s in sibling_slots if s.store_service]
+                if names:
+                    return " + ".join(names)
+        return obj.store_service.name if obj.store_service else "Salon Service"
+
+    def get_items(self, obj):
+        if obj.booking_id:
+            sibling_slots = obj.booking.slots.select_related('store_service').all()
+            if sibling_slots.count() > 1:
+                return [
+                    {
+                        "id": str(s.id),
+                        "service_name": s.store_service.name if s.store_service else "Salon Service",
+                        "price": (s.price_paise or 0) / 100,
+                    }
+                    for s in sibling_slots
+                ]
+        single_price = (obj.price_paise or 0) / 100
+        name = obj.store_service.name if obj.store_service else "Salon Service"
+        return [
+            {
+                "id": str(obj.id),
+                "service_name": name,
+                "price": single_price,
+            }
+        ]

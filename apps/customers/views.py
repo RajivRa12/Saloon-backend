@@ -958,17 +958,40 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                     booking_end=slot_end,
                     is_home_service=bool(request.data.get('is_home_service', False)),
                     service_address=request.data.get('service_address') or request.data.get('address') or None,
+                    notes=request.data.get('notes') or None,
                 )
 
-                AppointmentSlot.objects.create(
-                    booking=booking,
-                    store_service=svc,
-                    professional=prof,
-                    slot_start=slot_start,
-                    slot_end=slot_end,
-                    price_paise=price_paise,
-                    status=AppointmentSlotStatus.SCHEDULED,
-                )
+                services_list = request.data.get('services') or request.data.get('items') or []
+                if isinstance(services_list, list) and len(services_list) > 1:
+                    current_start = slot_start
+                    for item in services_list:
+                        item_id = item.get('id') or item.get('service_id')
+                        item_svc = StoreService.objects.filter(id=item_id, store_group=outlet.store_group).first() if item_id else None
+                        item_dur = int(item.get('duration') or item.get('duration_minutes') or 30)
+                        item_end = current_start + timedelta(minutes=item_dur)
+                        item_price = int(round(float(item.get('price') or 0) * 100))
+                        AppointmentSlot.objects.create(
+                            booking=booking,
+                            store_service=item_svc or svc,
+                            professional=prof,
+                            slot_start=current_start,
+                            slot_end=item_end,
+                            price_paise=item_price if item_price > 0 else (price_paise // len(services_list)),
+                            status=AppointmentSlotStatus.SCHEDULED,
+                        )
+                        current_start = item_end
+                    booking.booking_end = current_start
+                    booking.save(update_fields=['booking_end'])
+                else:
+                    AppointmentSlot.objects.create(
+                        booking=booking,
+                        store_service=svc,
+                        professional=prof,
+                        slot_start=slot_start,
+                        slot_end=slot_end,
+                        price_paise=price_paise,
+                        status=AppointmentSlotStatus.SCHEDULED,
+                    )
 
             booking.refresh_from_db()
             return success_response(CustomerBookingSerializer(booking).data, "Appointment booked successfully.", status_code=201)
