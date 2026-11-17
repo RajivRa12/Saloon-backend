@@ -80,16 +80,62 @@ class StaffViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return User.objects.filter(store=self.request.user.store, role__in=[Role.RECEPTIONIST, Role.THERAPIST, Role.STORE_ADMIN])
     def perform_create(self, serializer):
-        if 'email' in serializer.validated_data:
-            serializer.validated_data['email'] = serializer.validated_data['email'].lower()
-            
-        user = serializer.save(
-            store=self.request.user.store,
-            brand=self.request.user.brand,
+        from apps.core.models import (
+            ProfessionalAccount, Professional, ProfessionalLinkStatus,
+            Outlet, StoreGroup, TherapistProfile
         )
-        password = self.request.data.get('password', 'changeme123')
+        from django.utils import timezone
+        email = serializer.validated_data.get('email', '').strip().lower()
+        if email:
+            serializer.validated_data['email'] = email
+
+        store = self.request.user.store
+        brand = self.request.user.brand
+        outlet = getattr(store, 'outlet', None) or Outlet.objects.first()
+
+        user = serializer.save(
+            store=store,
+            brand=brand,
+            outlet=outlet,
+            username=email or None,
+        )
+        password = self.request.data.get('password') or 'Password@123'
         user.set_password(password)
         user.save()
+
+        # If role is THERAPIST, auto-provision ProfessionalAccount, Professional and TherapistProfile
+        if user.role == Role.THERAPIST:
+            TherapistProfile.objects.get_or_create(user=user)
+            acc, _ = ProfessionalAccount.objects.get_or_create(
+                user=user,
+                defaults={
+                    'name': user.get_full_name() or user.email,
+                    'phone_e164': user.phone or '',
+                }
+            )
+            if outlet:
+                store_group = getattr(outlet, 'store_group', None) or StoreGroup.objects.first()
+                if store_group:
+                    Professional.objects.get_or_create(
+                        user_account=acc,
+                        outlet=outlet,
+                        defaults={
+                            'store_group': store_group,
+                            'display_name': user.get_full_name() or user.email,
+                            'display_role': 'Stylist',
+                            'email': user.email,
+                            'phone_e164': user.phone or '',
+                            'link_status': ProfessionalLinkStatus.ACCEPTED,
+                            'is_bookable': True,
+                            'accepted_at': timezone.now(),
+                        }
+                    )
+    def perform_update(self, serializer):
+        user = serializer.save()
+        password = self.request.data.get('password')
+        if password and str(password).strip():
+            user.set_password(str(password).strip())
+            user.save()
 class StaffTrainingViewSet(viewsets.ModelViewSet):
     from apps.core.models import StaffTraining
     queryset = StaffTraining.objects.all()
@@ -683,7 +729,7 @@ class DashboardViewSet(viewsets.ViewSet):
         revenue_today = Decimal(today_invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         pending_payments = Decimal(today_invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         today_tips = Tip.objects.filter(invoice__store=store, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00') if store else Decimal('0.00')
-        staff_attendance = Attendance.objects.filter(store=store, date=today, status='PRESENT').count() if store else 0
+        staff_attendance = Attendance.objects.filter(store=store, date=today, status='PRESENT', clock_in__isnull=False, clock_out__isnull=True).count() if store else 0
         now = timezone.now()
         busy_therapists = AppointmentItem.objects.filter(
             appointment__store=store,

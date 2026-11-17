@@ -229,10 +229,27 @@ class Phase1StoreServiceSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'default_price_paise', 'deposit_percentage', 'duration_min', 'category_name', 'skill_tag']
         read_only_fields = fields
 class Phase1ProfessionalSerializer(serializers.ModelSerializer):
+    is_online = serializers.SerializerMethodField()
+    availability_status = serializers.SerializerMethodField()
+
     class Meta:
         model = Professional
-        fields = ['id', 'display_name', 'display_role']
+        fields = ['id', 'display_name', 'display_role', 'is_online', 'availability_status']
         read_only_fields = fields
+
+    def get_is_online(self, obj):
+        from apps.core.models import Attendance
+        from django.utils import timezone
+        if not obj.user_account_id or not obj.user_account.user_id:
+            return True
+        today = timezone.localtime().date()
+        att = Attendance.objects.filter(staff=obj.user_account.user, date=today).first()
+        if att:
+            return bool(att.clock_in and not att.clock_out)
+        return False
+
+    def get_availability_status(self, obj):
+        return "online" if self.get_is_online(obj) else "offline"
 class Phase1BookingRequestSerializer(serializers.Serializer):
     store_service_id = serializers.UUIDField()
     professional_id = serializers.UUIDField(required=False, allow_null=True)

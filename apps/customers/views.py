@@ -119,7 +119,7 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
         if not store.outlet_id:
             return error_response("Online booking is not available for this location yet.", 404)
         qs = Professional.objects.filter(
-            outlet_id=store.outlet_id, is_bookable=True
+            outlet_id=store.outlet_id
         ).filter(models.Q(link_status=ProfessionalLinkStatus.ACCEPTED) | models.Q(link_status=ProfessionalLinkStatus.INVITED))
         skill_tag = None
         service_id = request.query_params.get('service_id')

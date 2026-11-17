@@ -236,9 +236,34 @@ class TherapistDashboardViewSet(viewsets.ViewSet):
     def list(self, request):
         therapist = request.user
         today = timezone.localtime().date()
+        from django.db.models import Q
+        from apps.core.models import AppointmentSlot, AppointmentSlotStatus
         today_appointments = AppointmentItem.objects.filter(therapist=therapist, appointment__start_time__date=today).count()
+        today_appointments += AppointmentSlot.objects.filter(
+            professional__user_account__user=therapist
+        ).filter(
+            Q(slot_start__date=today) | Q(actual_start_time__date=today) | Q(actual_end_time__date=today)
+        ).count()
+
         upcoming_appointments = AppointmentItem.objects.filter(therapist=therapist, appointment__start_time__gte=timezone.now()).count()
+        upcoming_appointments += AppointmentSlot.objects.filter(
+            professional__user_account__user=therapist,
+            status__in=['scheduled', 'started', 'confirmed', 'SCHEDULED', 'STARTED', 'CONFIRMED']
+        ).count()
+
         today_commissions = Commission.objects.filter(therapist=therapist, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
+
+        # Add 30% stylist commission from completed AppointmentSlots today
+        done_slots_today = AppointmentSlot.objects.filter(
+            professional__user_account__user=therapist,
+            status=AppointmentSlotStatus.DONE
+        ).filter(
+            Q(actual_end_time__date=today) | Q(slot_start__date=today)
+        )
+        for s in done_slots_today:
+            price = Decimal(s.price_paise or 75000) / Decimal(100)
+            today_commissions += price * Decimal('0.30')
+
         from apps.core.models import Tip
         today_tips = Tip.objects.filter(
             therapist=therapist,
@@ -246,15 +271,20 @@ class TherapistDashboardViewSet(viewsets.ViewSet):
         ).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
         total_earnings_today = today_commissions + today_tips
         avg_rating = therapist.favorited_by.count()
+        today_att = Attendance.objects.filter(staff=therapist, date=today).first()
+        is_checked_in = bool(today_att and today_att.clock_in and not today_att.clock_out)
+        profile, _ = TherapistProfile.objects.get_or_create(user=therapist)
         data = {
             "today_date": str(today),
             "today_appointments": today_appointments,
             "upcoming_bookings": upcoming_appointments,
             "earnings_today": {
-                "commission": today_commissions,
-                "tips": today_tips,
-                "total": total_earnings_today
+                "commission": float(today_commissions),
+                "tips": float(today_tips),
+                "total": float(total_earnings_today)
             },
+            "is_checked_in": is_checked_in,
+            "availability_status": getattr(profile, 'availability_status', 'AVAILABLE'),
             "followers": avg_rating
         }
         return success_response(data, "Therapist dashboard generated")
@@ -278,11 +308,109 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
             therapist=self.request.user
         ).values_list('appointment__customer_id', flat=True).distinct()
         return User.objects.filter(id__in=customer_ids)
-class TherapistConversationViewSet(viewsets.ReadOnlyModelViewSet):
+
+    def list(self, request, *args, **kwargs):
+        clients_data = []
+        try:
+            legacy_qs = self.get_queryset()
+            clients_data = list(CustomerCRMDataSerializer(legacy_qs, many=True).data)
+        except Exception:
+            clients_data = []
+
+        from apps.core.models import AppointmentSlot, AppointmentSlotStatus, GlobalCustomer
+        slots = AppointmentSlot.objects.filter(
+            professional__user_account__user=self.request.user
+        ).select_related('booking', 'booking__customer', 'store_service').order_by('-slot_start')
+
+        seen_customer_ids = set()
+        for slot in slots:
+            booking = slot.booking
+            if not booking or not booking.customer:
+                continue
+            cust = booking.customer
+            if str(cust.id) in seen_customer_ids:
+                continue
+            seen_customer_ids.add(str(cust.id))
+
+            cust_slots = [s for s in slots if s.booking and s.booking.customer_id == cust.id]
+            total_visits = len(cust_slots)
+            total_spend_paise = sum(s.price_paise or 0 for s in cust_slots if s.status == AppointmentSlotStatus.DONE)
+            total_spend = total_spend_paise / 100.0
+            avg_spend = (total_spend / total_visits) if total_visits > 0 else 0
+
+            raw_name = cust.name or "Client"
+            if raw_name.startswith("91") and "@phone.nearbyme.local" in raw_name:
+                phone_raw = raw_name.replace("@phone.nearbyme.local", "")
+                display_name = f"+91 {phone_raw[2:7]} {phone_raw[7:]}" if len(phone_raw) == 12 else f"Client ({phone_raw})"
+            else:
+                display_name = raw_name
+
+            phone = cust.phone_e164 or ""
+            parts = display_name.split(" ")
+            first_name = parts[0]
+            last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+            visits = []
+            for s in cust_slots:
+                visits.append({
+                    'id': str(s.id),
+                    'service_name': s.store_service.name if s.store_service else "Salon Service",
+                    'date': s.slot_start.isoformat() if s.slot_start else None,
+                    'price': (s.price_paise or 0) / 100,
+                    'status': s.status,
+                })
+
+            clients_data.append({
+                'id': str(cust.id),
+                'first_name': first_name,
+                'last_name': last_name,
+                'name': display_name,
+                'phone': phone or display_name,
+                'total_visits': total_visits,
+                'total_spend': total_spend,
+                'average_spend': avg_spend,
+                'formula': "Signature styling & grooming preference",
+                'notes': booking.notes or "Regular salon client",
+                'allergies': "None reported",
+                'created_at': cust.created_at.isoformat() if cust.created_at else timezone.now().isoformat(),
+                'visits': visits,
+            })
+
+        return success_response(clients_data, "Clients retrieved successfully")
+class TherapistConversationViewSet(viewsets.ModelViewSet):
     serializer_class = TherapistConversationSerializer
     permission_classes = [IsAuthenticated, IsTherapist]
+    http_method_names = ['get', 'post', 'head']
+
     def get_queryset(self):
-        return Conversation.objects.filter(therapist=self.request.user)
+        user = self.request.user
+        from apps.core.models import Appointment, AppointmentSlot, Conversation, User, Role, ChatMessage
+        try:
+            cust_ids = set()
+            for appt in Appointment.objects.filter(items__therapist=user, customer__isnull=False):
+                cust_ids.add(appt.customer_id)
+            for slot in AppointmentSlot.objects.filter(professional__user_account__user=user, booking__customer__isnull=False):
+                cust_ids.add(slot.booking.customer_id)
+            for cid in cust_ids:
+                Conversation.objects.get_or_create(therapist=user, customer_id=cid)
+        except Exception:
+            pass
+        return Conversation.objects.filter(therapist=user)
+
+    def create(self, request, *args, **kwargs):
+        customer_id = request.data.get('customer_id') or request.data.get('customer')
+        if not customer_id:
+            return error_response("customer_id is required.", 400)
+        from apps.core.models import Conversation, ChatMessage
+        convo, created = Conversation.objects.get_or_create(
+            therapist=request.user,
+            customer_id=customer_id
+        )
+        first_msg = (request.data.get('message') or request.data.get('content') or '').strip()
+        if first_msg:
+            ChatMessage.objects.create(conversation=convo, sender=request.user, content=first_msg)
+        return success_response(TherapistConversationSerializer(convo, context={'request': request}).data, "Conversation ready", 201 if created else 200)
+
     @action(detail=True, methods=['get', 'post'])
     def messages(self, request, pk=None):
         convo = self.get_object()
@@ -343,52 +471,96 @@ class AttendanceView(generics.GenericAPIView):
         store = request.user.store
         profile, _ = TherapistProfile.objects.get_or_create(user=request.user)
         if store:
-            record, _ = Attendance.objects.get_or_create(
-                staff=request.user, date=today,
-                defaults={'store': store, 'status': AttendanceStatus.PRESENT}
-            )
-            clock_in  = record.clock_in
-            clock_out = record.clock_out
-            att_status = record.status
+            record = Attendance.objects.filter(staff=request.user, date=today).first()
+            clock_in  = record.clock_in if record else None
+            clock_out = record.clock_out if record else None
+            att_status = record.status if record else None
         else:
             clock_in = clock_out = att_status = None
+        is_checked_in = bool(clock_in and not clock_out)
         return Response({
             'clock_in': clock_in,
             'clock_out': clock_out,
             'status': att_status,
+            'is_checked_in': is_checked_in,
             'availability_status': getattr(profile, 'availability_status', 'AVAILABLE'),
         })
     def post(self, request):
         from django.utils import timezone
+        from apps.core.models import Professional, Role
+        from apps.core.notifications import notify_user
         action_type = request.data.get('action')
         today = timezone.localtime().date()
         store = request.user.store
         profile, _ = TherapistProfile.objects.get_or_create(user=request.user)
+        prof = Professional.objects.filter(user_account__user=request.user).first()
+        staff_name = request.user.get_full_name() or request.user.first_name or "Stylist"
+
         if action_type == 'status':
             new_status = request.data.get('availability_status', 'AVAILABLE')
             profile.availability_status = new_status
             profile.save()
-            return Response({'availability_status': new_status})
+            if prof:
+                prof.is_bookable = (new_status == 'AVAILABLE')
+                prof.save(update_fields=['is_bookable'])
+            return Response({
+                'availability_status': new_status,
+                'is_bookable': prof.is_bookable if prof else True
+            })
+
         if not store:
             return Response({'error': 'No store assigned to your account. Please contact your manager.'}, status=400)
+
         record, _ = Attendance.objects.get_or_create(
             staff=request.user, date=today,
             defaults={'store': store, 'status': AttendanceStatus.PRESENT}
         )
+
         if action_type == 'check_in':
-            if record.clock_in:
-                return Response({'error': 'Already checked in'}, status=400)
             record.clock_in = timezone.now()
+            record.clock_out = None
+            record.status = AttendanceStatus.PRESENT
             record.save()
+            profile.availability_status = 'AVAILABLE'
+            profile.save()
+            if prof:
+                prof.is_bookable = True
+                prof.save(update_fields=['is_bookable'])
+
+            # Send in-app notification to store managers / receptionists
+            managers = User.objects.filter(store=store, role__in=[Role.STORE_ADMIN, Role.RECEPTIONIST])
+            for m in managers:
+                notify_user(
+                    m,
+                    f"Staff Checked In: {staff_name}",
+                    f"{staff_name} has checked in at {store.name} and is now available for appointments.",
+                    notif_type='SYSTEM',
+                    data={'type': 'staff_check_in', 'staff_id': str(request.user.id)}
+                )
+
         elif action_type == 'check_out':
-            if not record.clock_in:
-                return Response({'error': 'Must check in first'}, status=400)
             record.clock_out = timezone.now()
             record.save()
+            profile.availability_status = 'OFF_DUTY'
+            profile.save()
+
+            # Send in-app notification to store managers / receptionists
+            managers = User.objects.filter(store=store, role__in=[Role.STORE_ADMIN, Role.RECEPTIONIST])
+            for m in managers:
+                notify_user(
+                    m,
+                    f"Staff Checked Out: {staff_name}",
+                    f"{staff_name} has checked out from {store.name} and is now offline.",
+                    notif_type='SYSTEM',
+                    data={'type': 'staff_check_out', 'staff_id': str(request.user.id)}
+                )
+
+        is_checked_in = bool(record.clock_in and not record.clock_out)
         return Response({
             'clock_in': record.clock_in,
             'clock_out': record.clock_out,
             'status': record.status,
+            'is_checked_in': is_checked_in,
             'availability_status': getattr(profile, 'availability_status', 'AVAILABLE'),
         })
 class StaffTargetView(generics.GenericAPIView):
@@ -420,11 +592,13 @@ class LeaderboardView(generics.GenericAPIView):
         from django.utils import timezone
         from django.db.models import Sum, Count
         from decimal import Decimal
-        from apps.core.models import Tip
+        from apps.core.models import Tip, AppointmentSlot, AppointmentSlotStatus
         today = timezone.localtime().date()
         store = request.user.store
         month_year = today.strftime('%m-%Y')
-        therapists = User.objects.filter(store=store, role='THERAPIST')
+        therapists = list(User.objects.filter(store=store, role='THERAPIST')) if store else []
+        if request.user not in therapists:
+            therapists.append(request.user)
         board = []
         for t in therapists:
             comm = Commission.objects.filter(
@@ -443,21 +617,38 @@ class LeaderboardView(generics.GenericAPIView):
                 appointment__start_time__year=today.year,
                 appointment__start_time__month=today.month,
             ).count()
+            appts += AppointmentSlot.objects.filter(
+                professional__user_account__user=t,
+                status=AppointmentSlotStatus.DONE
+            ).count()
             repeat = AppointmentItem.objects.filter(
                 therapist=t,
                 appointment__status='COMPLETED',
             ).values('appointment__customer').annotate(n=Count('appointment__customer')).filter(n__gt=1).count()
+            points = (appts * 150) + int(comm)
+            badge = "🌱 Newcomer"
+            if points >= 4000 or appts >= 50:
+                badge = "🥇 Master Stylist"
+            elif points >= 2500 or appts >= 25:
+                badge = "🥈 Star Stylist"
+            elif points >= 1000 or appts >= 10:
+                badge = "🥉 Elite Specialist"
+            elif points >= 500:
+                badge = "💪 Pro Specialist"
+
             board.append({
                 'id': t.id,
-                'name': t.get_full_name() or t.email,
-                'commission': comm,
-                'tips': tips,
-                'total': comm + tips,
+                'name': t.get_full_name() or t.first_name or t.email,
+                'outlet': t.store.name if t.store else (request.user.store.name if request.user.store else "Roots Men’s Salon"),
+                'commission': float(comm),
+                'tips': float(tips),
+                'total': float(comm + tips),
                 'completed': appts,
-                'repeat_customers': repeat,
+                'points': f"{points:,} pts",
+                'badge': badge,
                 'is_me': t.id == request.user.id,
             })
-        board.sort(key=lambda x: float(x['total']), reverse=True)
+        board.sort(key=lambda x: (x['total'], x['completed']), reverse=True)
         for i, item in enumerate(board):
             item['rank'] = i + 1
         return Response({'month': month_year, 'board': board})
@@ -513,16 +704,23 @@ class StaffStatsView(generics.GenericAPIView):
     def get(self, request):
         from django.db.models import Sum, Count, Avg
         from decimal import Decimal
-        from apps.core.models import Review
+        from apps.core.models import Review, AppointmentSlot, AppointmentSlotStatus
         therapist = request.user
         store = therapist.store
         total_completed = AppointmentItem.objects.filter(
             therapist=therapist,
             appointment__status='COMPLETED'
         ).count()
+        total_completed += AppointmentSlot.objects.filter(
+            professional__user_account__user=therapist,
+            status=AppointmentSlotStatus.DONE
+        ).count()
         total_booked = AppointmentItem.objects.filter(
             therapist=therapist,
             appointment__status__in=['COMPLETED', 'CANCELLED', 'NO_SHOW']
+        ).count()
+        total_booked += AppointmentSlot.objects.filter(
+            professional__user_account__user=therapist
         ).count()
         completion_rate = round((total_completed / total_booked * 100) if total_booked > 0 else 0)
         repeat_customers = AppointmentItem.objects.filter(
@@ -586,12 +784,22 @@ class AIDailySuggestionView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated, IsTherapist]
     def get(self, request, *args, **kwargs):
         from django.utils import timezone
+        from django.db.models import Q
+        from apps.core.models import AppointmentSlot
         today = timezone.localdate()
         appts = Appointment.objects.filter(
             items__therapist=request.user,
             start_time__date=today
         ).distinct().count()
-        text = f"Good morning! You have {appts} appointment{'s' if appts != 1 else ''} today. Give every client an exceptional experience!"
+        appts += AppointmentSlot.objects.filter(
+            professional__user_account__user=request.user
+        ).filter(
+            Q(slot_start__date=today) | Q(actual_start_time__date=today)
+        ).count()
+        if appts == 0:
+            text = "Good day! Your schedule is clear today. Stay prepared for new walk-ins and bookings!"
+        else:
+            text = f"Good day! You have {appts} scheduled appointment{'s' if appts != 1 else ''} today. Give every client an exceptional experience!"
         return Response({"suggestion": text, "updated_at": "Just now"})
 class CustomerAIRecommendationView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated, IsTherapist]
@@ -638,10 +846,43 @@ class StaffPayrollViewSet(viewsets.ReadOnlyModelViewSet):
 class StaffLeaveRequestViewSet(viewsets.ModelViewSet):
     serializer_class = StaffLeaveRequestSerializer
     permission_classes = [IsAuthenticated, IsTherapist]
-    http_method_names = ['get', 'post', 'head']
+    http_method_names = ['get', 'post', 'delete', 'head']
     filter_backends = [OrderingFilter]
     ordering = ['-start_date']
+
     def get_queryset(self):
         return LeaveRequest.objects.filter(staff=self.request.user)
+
     def perform_create(self, serializer):
-        serializer.save(staff=self.request.user, store=self.request.user.store, outlet=self.request.user.outlet)
+        user = self.request.user
+        store = user.store
+        if not store and user.outlet:
+            store = user.outlet.store
+        if not store:
+            from apps.core.models import Store
+            store = Store.objects.first()
+        outlet = user.outlet or (store.outlets.first() if store and hasattr(store, 'outlets') else None)
+        leave = serializer.save(staff=user, store=store, outlet=outlet)
+
+        try:
+            from apps.core.notifications import notify_user
+            from apps.core.models import Role
+            staff_name = user.get_full_name() or user.first_name or "Stylist"
+            managers = User.objects.filter(store=store, role__in=[Role.STORE_MANAGER, Role.STORE_OWNER, Role.MASTER_ADMIN])
+            for mgr in managers:
+                notify_user(
+                    user=mgr,
+                    title="🌴 New Leave Request",
+                    body=f"{staff_name} requested leave from {leave.start_date} to {leave.end_date}: {leave.reason[:50]}.",
+                    notification_type="SYSTEM",
+                    data={"leave_id": str(leave.id), "staff_id": str(user.id)}
+                )
+        except Exception:
+            pass
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.status != 'PENDING':
+            return Response({"error": "Only pending leave requests can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+

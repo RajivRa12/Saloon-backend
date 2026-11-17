@@ -16,12 +16,17 @@ class TherapistChatMessageSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         return bool(request and obj.sender_id == request.user.id)
 class TherapistConversationSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
+    customer_name = serializers.SerializerMethodField()
+    customer_phone = serializers.CharField(source='customer.phone', read_only=True)
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
     class Meta:
         model = Conversation
-        fields = ['id', 'customer', 'customer_name', 'last_message', 'unread_count', 'created_at']
+        fields = ['id', 'customer', 'customer_name', 'customer_phone', 'last_message', 'unread_count', 'created_at']
+    def get_customer_name(self, obj):
+        if not obj.customer:
+            return "Client"
+        return obj.customer.get_full_name() or obj.customer.first_name or obj.customer.phone or obj.customer.email or "Client"
     def get_last_message(self, obj):
         m = obj.messages.order_by('-created_at').first()
         return {'content': m.content, 'created_at': m.created_at} if m else None
