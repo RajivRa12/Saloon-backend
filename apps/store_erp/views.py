@@ -874,8 +874,16 @@ class DashboardViewSet(viewsets.ViewSet):
         ]
 
         upcoming = []
-        # Populate upcoming schedule with real customer bookings
-        for b in all_active_bookings.select_related('customer', 'outlet').prefetch_related('slots__store_service', 'slots__professional').order_by('booking_start')[:25]:
+        # Populate upcoming schedule with real customer bookings:
+        # Strictly exclude COMPLETED and CANCELLED, and strictly include today and future upcoming bookings
+        upcoming_bookings_qs = (
+            bookings_qs.filter(booking_start__date__gte=today)
+            .exclude(status__in=[BookingStatus.CANCELLED, BookingStatus.COMPLETED])
+            .select_related('customer', 'outlet')
+            .prefetch_related('slots__store_service', 'slots__professional')
+            .order_by('booking_start')[:30]
+        )
+        for b in upcoming_bookings_qs:
             slots = list(b.slots.all())
             first_slot = slots[0] if slots else None
             if len(slots) > 1:
@@ -920,7 +928,12 @@ class DashboardViewSet(viewsets.ViewSet):
             })
 
         if not upcoming:
-            upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:15]
+            upcoming_qs = (
+                today_appointments.filter(start_time__gte=now)
+                .exclude(status__in=[AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED])
+                .select_related('customer')
+                .order_by('start_time')[:15]
+            )
             for appt in upcoming_qs:
                 first_item = appt.items.select_related('service', 'therapist').first()
                 u_cust = appt.customer
