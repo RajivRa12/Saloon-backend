@@ -43,8 +43,24 @@ def eligible_professionals(outlet, skill_tag, professional_id=None):
     if professional_id:
         qs = qs.filter(id=professional_id)
     if skill_tag:
-        qs = qs.filter(skills__skill_tag=skill_tag)
-    return qs.distinct()
+        skill_qs = qs.filter(skills__skill_tag=skill_tag)
+        if skill_qs.exists():
+            return skill_qs.distinct()
+    if qs.exists():
+        return qs.distinct()
+
+    if outlet and outlet.store_group_id:
+        sg_qs = Professional.objects.filter(
+            outlet__store_group_id=outlet.store_group_id, is_bookable=True, link_status=ProfessionalLinkStatus.ACCEPTED
+        )
+        if sg_qs.exists():
+            return sg_qs.distinct()
+
+    all_accepted = Professional.objects.filter(is_bookable=True, link_status=ProfessionalLinkStatus.ACCEPTED)
+    if all_accepted.exists():
+        return all_accepted.distinct()
+
+    return Professional.objects.none()
 from zoneinfo import ZoneInfo
 
 def get_outlet_timezone(outlet):
@@ -76,6 +92,15 @@ def _shift_windows(professional, outlet, the_date):
             end = timezone.make_aware(dt.datetime.combine(the_date, end_time), tz)
             if end > start:
                 windows.append((start, end))
+
+    if not windows:
+        open_time = (outlet.opening_time if outlet and outlet.opening_time else dt.time(9, 0))
+        close_time = (outlet.closing_time if outlet and outlet.closing_time else dt.time(21, 0))
+        if close_time > open_time:
+            start = timezone.make_aware(dt.datetime.combine(the_date, open_time), tz)
+            end = timezone.make_aware(dt.datetime.combine(the_date, close_time), tz)
+            windows.append((start, end))
+
     return windows
 def _subtract_interval(windows, busy_start, busy_end):
     result = []
@@ -122,7 +147,7 @@ def free_windows_for_professional(professional, outlet, the_date, duration_min, 
 def resource_free(outlet, resource_type, start, end):
     resources = Resource.objects.filter(outlet=outlet, resource_type=resource_type, is_bookable=True)
     if not resources.exists():
-        return False
+        return True
     busy_resource_ids = set(
         AppointmentSlot.objects.filter(
             resource__in=resources,

@@ -923,17 +923,23 @@ class DashboardViewSet(viewsets.ViewSet):
             upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:15]
             for appt in upcoming_qs:
                 first_item = appt.items.select_related('service', 'therapist').first()
-                raw_cname = (appt.customer.name or appt.customer.get_full_name() or "") if appt.customer else "Walk-in"
-                if '@phone.nearbyme.local' in raw_cname or '@' in raw_cname:
-                    digits = ''.join(c for c in raw_cname.split('@')[0] if c.isdigit())
-                    if len(digits) == 12 and digits.startswith('91'):
-                        c_name = f"+91 {digits[2:7]} {digits[7:]}"
-                    elif len(digits) == 10:
-                        c_name = f"+91 {digits[:5]} {digits[5:]}"
+                u_cust = appt.customer
+                c_name = ""
+                if u_cust:
+                    full = (u_cust.get_full_name() or u_cust.first_name or "").strip()
+                    if full and '@' not in full and not full.startswith('+91') and not full.isdigit():
+                        c_name = full
                     else:
-                        c_name = "Customer"
+                        raw_p = (u_cust.phone or u_cust.username or (u_cust.email.split('@')[0] if u_cust.email else "")).strip()
+                        digits = ''.join(c for c in raw_p if c.isdigit())
+                        if len(digits) == 12 and digits.startswith('91'):
+                            c_name = f"+91 {digits[2:7]} {digits[7:]}"
+                        elif len(digits) == 10:
+                            c_name = f"+91 {digits[:5]} {digits[5:]}"
+                        else:
+                            c_name = "Guest Client"
                 else:
-                    c_name = raw_cname or "Customer"
+                    c_name = "Walk-in"
                 
                 items_list = list(appt.items.all())
                 if len(items_list) > 1:
@@ -1028,24 +1034,47 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        store = getattr(user, 'store', None)
+        store_id = self.request.headers.get('X-Store-Id') or self.request.META.get('HTTP_X_STORE_ID')
+        store = None
+        if store_id:
+            try:
+                from apps.core.models import Store
+                store = Store.objects.filter(id=int(store_id)).first()
+            except Exception:
+                pass
+        if not store:
+            store = getattr(user, 'store', None)
         outlet = getattr(user, 'outlet', None)
         if not store and outlet:
             store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
 
+        # For single object actions, don't fail with 404 if the leave belongs to any store in context
+        if self.action in ['retrieve', 'update', 'partial_update', 'destroy', 'approve', 'reject']:
+            return LeaveRequest.objects.all().select_related('staff')
+
         from django.db.models import Q
+        from apps.core.models import Role
         q = Q()
         if store:
             q |= Q(store=store)
         if outlet:
             q |= Q(outlet=outlet)
-        if not q:
+        if not q or user.is_superuser or getattr(user, 'role', '') in [Role.MASTER_ADMIN, 'ADMIN']:
             return LeaveRequest.objects.all().select_related('staff').order_by('-start_date')
         return LeaveRequest.objects.filter(q).select_related('staff').order_by('-start_date')
 
     def perform_create(self, serializer):
         user = self.request.user
-        store = getattr(user, 'store', None)
+        store_id = self.request.headers.get('X-Store-Id') or self.request.META.get('HTTP_X_STORE_ID')
+        store = None
+        if store_id:
+            try:
+                from apps.core.models import Store
+                store = Store.objects.filter(id=int(store_id)).first()
+            except Exception:
+                pass
+        if not store:
+            store = getattr(user, 'store', None)
         outlet = getattr(user, 'outlet', None)
         if not store and outlet:
             store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
@@ -1059,38 +1088,62 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             self._handle_leave_approved(leave)
 
     def perform_update(self, serializer):
-        prev_status = self.get_object().status
+        prev_status = serializer.instance.status
         leave = serializer.save()
         if leave.status == 'APPROVED' and prev_status != 'APPROVED':
             self._handle_leave_approved(leave)
         elif leave.status == 'REJECTED' and prev_status != 'REJECTED':
             self._notify_leave_status(leave, "REJECTED")
 
+    @action(detail=True, methods=['post', 'patch'])
+    def approve(self, request, pk=None):
+        leave = self.get_object()
+        leave.status = 'APPROVED'
+        leave.save(update_fields=['status'])
+        self._handle_leave_approved(leave)
+        return Response(self.get_serializer(leave).data)
+
+    @action(detail=True, methods=['post', 'patch'])
+    def reject(self, request, pk=None):
+        leave = self.get_object()
+        leave.status = 'REJECTED'
+        leave.save(update_fields=['status'])
+        self._notify_leave_status(leave, "REJECTED")
+        return Response(self.get_serializer(leave).data)
+
     def _handle_leave_approved(self, leave):
         from apps.core.models import Professional, ProfessionalTimeOff
         from datetime import datetime, time
+        import zoneinfo
+        kolkata_tz = zoneinfo.ZoneInfo('Asia/Kolkata')
         try:
             prof = None
             if leave.outlet:
                 prof = Professional.objects.filter(outlet=leave.outlet, email=leave.staff.email).first() or \
-                       Professional.objects.filter(outlet=leave.outlet, phone_e164=leave.staff.phone).first()
+                       Professional.objects.filter(outlet=leave.outlet, phone_e164=leave.staff.phone).first() or \
+                       Professional.objects.filter(outlet=leave.outlet, user_account__user=leave.staff).first()
             if not prof and leave.store and getattr(leave.store, 'outlet', None):
                 prof = Professional.objects.filter(outlet=leave.store.outlet, email=leave.staff.email).first() or \
-                       Professional.objects.filter(outlet=leave.store.outlet, phone_e164=leave.staff.phone).first()
+                       Professional.objects.filter(outlet=leave.store.outlet, phone_e164=leave.staff.phone).first() or \
+                       Professional.objects.filter(outlet=leave.store.outlet, user_account__user=leave.staff).first()
+            if not prof:
+                prof = Professional.objects.filter(email=leave.staff.email).first() or \
+                       Professional.objects.filter(phone_e164=leave.staff.phone).first() or \
+                       Professional.objects.filter(user_account__user=leave.staff).first()
             if prof:
-                start_dt = datetime.combine(leave.start_date, time.min)
-                end_dt = datetime.combine(leave.end_date, time.max)
+                start_dt = datetime.combine(leave.start_date, time.min).replace(tzinfo=kolkata_tz)
+                end_dt = datetime.combine(leave.end_date, time.max).replace(tzinfo=kolkata_tz)
                 ProfessionalTimeOff.objects.get_or_create(
                     professional=prof,
                     start_at=start_dt,
                     end_at=end_dt,
                     defaults={
-                        'reason': leave.reason or 'Approved Leave',
-                        'created_by': f"Store Admin ({self.request.user.get_full_name() or self.request.user.email})"
+                        'reason': (leave.reason or 'Approved Leave')[:250],
+                        'created_by': f"Store Admin ({self.request.user.get_full_name() or self.request.user.email})"[:250]
                     }
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not sync leave to ProfessionalTimeOff: %s", e)
 
         self._notify_leave_status(leave, "APPROVED")
 
@@ -1101,12 +1154,12 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             notify_user(
                 user=leave.staff,
                 title=f"{icon} Leave Request {status.title()}",
-                body=f"Your leave request from {leave.start_date} to {leave.end_date} has been {status.lower()}.",
-                notification_type="SYSTEM",
+                message=f"Your leave request from {leave.start_date} to {leave.end_date} has been {status.lower()}.",
+                notif_type="SYSTEM",
                 data={"leave_id": str(leave.id), "status": status}
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not notify staff of leave status: %s", e)
 class MarketingCampaignViewSet(viewsets.ModelViewSet):
     serializer_class = MarketingCampaignSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
@@ -1131,6 +1184,10 @@ class ERPCouponViewSet(viewsets.ModelViewSet):
         return Coupon.objects.all().order_by('-created_at')
 
     def perform_create(self, serializer):
+        is_global = bool(self.request.data.get('is_global') or self.request.data.get('all_stores'))
+        if is_global:
+            serializer.save(store=None)
+            return
         user = self.request.user
         store = getattr(user, 'store', None)
         outlet = getattr(user, 'outlet', None)
@@ -1140,6 +1197,17 @@ class ERPCouponViewSet(viewsets.ModelViewSet):
             from apps.core.models import Store
             store = Store.objects.first()
         serializer.save(store=store)
+
+    def perform_update(self, serializer):
+        is_global = self.request.data.get('is_global')
+        if is_global is True:
+            serializer.save(store=None)
+        elif is_global is False and not serializer.instance.store:
+            user = self.request.user
+            store = getattr(user, 'store', None)
+            serializer.save(store=store)
+        else:
+            serializer.save()
 class DailyRegisterViewSet(viewsets.ModelViewSet):
     serializer_class = DailyRegisterSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
@@ -1453,20 +1521,36 @@ class CustomerCRMViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         store = getattr(user, 'store', None) or (user.outlet.legacy_stores.first() if getattr(user, 'outlet', None) else None)
-        if not store:
-            return User.objects.filter(role=Role.CUSTOMER).order_by('-date_joined')
-        from apps.core.models import CustomerStoreLink, Booking
-        appointment_customer_ids = Appointment.objects.filter(store=store).values_list('customer_id', flat=True)
-        linked_customer_ids = CustomerStoreLink.objects.filter(store=store).values_list('customer_id', flat=True)
-        booking_emails = []
-        if getattr(user, 'outlet', None):
-            booking_emails = Booking.objects.filter(outlet=user.outlet).values_list('customer__email', flat=True)
-        return User.objects.filter(role=Role.CUSTOMER).filter(
-            models.Q(store=store) |
-            models.Q(id__in=appointment_customer_ids) |
-            models.Q(id__in=linked_customer_ids) |
-            models.Q(email__in=booking_emails)
-        ).distinct().order_by('-date_joined')
+        outlet = getattr(user, 'outlet', None) or (store.outlet if store else None)
+        store_group = getattr(outlet, 'store_group', None) or getattr(store, 'store_group', None)
+
+        from apps.core.models import CustomerStoreLink, Booking, Appointment
+
+        q_filter = models.Q(role=Role.CUSTOMER)
+        store_q = models.Q()
+
+        if store:
+            store_q |= models.Q(store=store)
+            appointment_customer_ids = list(Appointment.objects.filter(store=store).values_list('customer_id', flat=True))
+            if appointment_customer_ids:
+                store_q |= models.Q(id__in=appointment_customer_ids)
+
+        if store_group:
+            linked_phones = list(CustomerStoreLink.objects.filter(store_group=store_group).values_list('customer__phone_e164', flat=True))
+            if linked_phones:
+                store_q |= models.Q(phone__in=linked_phones)
+
+        if outlet:
+            booking_emails = list(Booking.objects.filter(outlet=outlet).values_list('customer__email', flat=True))
+            booking_phones = list(Booking.objects.filter(outlet=outlet).values_list('customer__phone_e164', flat=True))
+            if booking_emails:
+                store_q |= models.Q(email__in=booking_emails)
+            if booking_phones:
+                store_q |= models.Q(phone__in=booking_phones)
+
+        if store_q:
+            return User.objects.filter(q_filter).filter(store_q).distinct().order_by('-date_joined')
+        return User.objects.filter(q_filter).order_by('-date_joined')
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -1474,7 +1558,7 @@ class CustomerCRMViewSet(viewsets.ModelViewSet):
         return context
 
     def create(self, request, *args, **kwargs):
-        from apps.core.models import normalize_e164, GlobalCustomer, CustomerProfile, CustomerStoreLink
+        from apps.core.models import normalize_e164, GlobalCustomer, CustomerProfile, CustomerStoreLink, StoreGroup
         import uuid as _uuid
 
         full_name = str(request.data.get('full_name') or request.data.get('name') or '').strip()
@@ -1496,6 +1580,8 @@ class CustomerCRMViewSet(viewsets.ModelViewSet):
             email = f"guest_{_uuid.uuid4().hex[:8]}@guest.nearbyme.local"
 
         store = getattr(request.user, 'store', None) or (request.user.outlet.legacy_stores.first() if getattr(request.user, 'outlet', None) else None) or Store.objects.first()
+        outlet = getattr(request.user, 'outlet', None) or (store.outlet if store else None)
+        store_group = getattr(outlet, 'store_group', None) or getattr(store, 'store_group', None) or StoreGroup.objects.first()
         brand = getattr(store, 'brand', None) or getattr(request.user, 'brand', None)
 
         # Check existing user by phone or email
@@ -1535,20 +1621,21 @@ class CustomerCRMViewSet(viewsets.ModelViewSet):
         CustomerProfile.objects.get_or_create(user=user)
 
         # Ensure GlobalCustomer exists for marketplace & booking engine
+        gc = None
         if phone_e164:
-            GlobalCustomer.objects.get_or_create(
+            gc, _ = GlobalCustomer.objects.get_or_create(
                 phone_e164=phone_e164,
                 defaults={'name': full_name or user.email, 'email': email}
             )
         elif email:
-            GlobalCustomer.objects.get_or_create(
+            gc, _ = GlobalCustomer.objects.get_or_create(
                 email=email,
                 defaults={'name': full_name or user.email}
             )
 
-        # Link customer to store
-        if store:
-            CustomerStoreLink.objects.get_or_create(store=store, customer=user)
+        # Link customer to store_group
+        if store_group and gc:
+            CustomerStoreLink.objects.get_or_create(store_group=store_group, customer=gc)
 
         context = self.get_serializer_context()
         serializer = self.get_serializer(user, context=context)
@@ -1763,7 +1850,7 @@ from rest_framework.views import APIView
 from django.core.cache import cache
 from apps.core.models import Outlet, StoreService
 from .permissions import IsOutletStaff
-from .availability import compute_availability, availability_cache_key, AVAILABILITY_CACHE_TTL_SECONDS
+from .availability import compute_availability, availability_cache_key, AVAILABILITY_CACHE_TTL_SECONDS, bump_availability_version
 class OutletAvailabilityView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     def get(self, request, outlet_id):
@@ -2091,17 +2178,40 @@ class CanonicalServicesListView(APIView):
         ]
         return success_response(data, "Canonical services fetched")
 
+def _resolve_store_service_outlet(request):
+    from apps.core.models import Store, Outlet
+    user = request.user
+    store_id = request.headers.get('X-Store-Id') or request.META.get('HTTP_X_STORE_ID')
+    if store_id:
+        try:
+            st = Store.objects.filter(id=store_id).select_related('outlet', 'outlet__store_group').first()
+            if st and st.outlet:
+                return st.outlet
+        except Exception:
+            pass
+    if getattr(user, 'outlet', None):
+        return user.outlet
+    if getattr(user, 'store', None) and getattr(user.store, 'outlet', None):
+        return user.store.outlet
+    if getattr(user, 'outlet_id', None):
+        o = Outlet.objects.filter(id=user.outlet_id).first()
+        if o:
+            return o
+    st = getattr(user, 'store', None) or Store.objects.first()
+    if st and st.outlet:
+        return st.outlet
+    return Outlet.objects.first()
+
 class StoreServiceListView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     def get(self, request):
-        outlet = getattr(request.user, 'outlet', None)
-        if not outlet and hasattr(request.user, 'store') and request.user.store:
-            outlet = request.user.store.outlet
-        if not outlet or not outlet.store_group_id:
-            return success_response([], "No store group linked")
+        outlet = _resolve_store_service_outlet(request)
+        store_group_id = outlet.store_group_id if outlet else None
 
         include_inactive = request.query_params.get('all') == 'true' or request.query_params.get('include_inactive') == 'true'
-        qs = StoreService.objects.filter(store_group_id=outlet.store_group_id)
+        qs = StoreService.objects.all()
+        if store_group_id:
+            qs = qs.filter(store_group_id=store_group_id)
         if not include_inactive:
             qs = qs.filter(is_active_in_store=True)
 
@@ -2109,9 +2219,7 @@ class StoreServiceListView(APIView):
         return success_response(StoreServiceLiteSerializer(services, many=True).data)
 
     def post(self, request):
-        outlet = getattr(request.user, 'outlet', None)
-        if not outlet and hasattr(request.user, 'store') and request.user.store:
-            outlet = request.user.store.outlet
+        outlet = _resolve_store_service_outlet(request)
         if not outlet or not outlet.store_group_id:
             return error_response("Your account is not linked to an active store outlet.", 400)
 
@@ -2149,18 +2257,15 @@ class StoreServiceListView(APIView):
             is_active_in_store=True,
             marketplace_status=StoreServiceMarketplaceStatus.APPROVED,
         )
+        if outlet:
+            bump_availability_version(outlet.id)
         return success_response(StoreServiceLiteSerializer(svc).data, "Service created successfully", status_code=201)
 
 class StoreServiceDetailView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]
     def patch(self, request, pk):
-        outlet = getattr(request.user, 'outlet', None)
-        if not outlet and hasattr(request.user, 'store') and request.user.store:
-            outlet = request.user.store.outlet
-        if not outlet or not outlet.store_group_id:
-            return error_response("Your account is not linked to an active store outlet.", 400)
-
-        svc = StoreService.objects.filter(id=pk, store_group_id=outlet.store_group_id).first()
+        outlet = _resolve_store_service_outlet(request)
+        svc = StoreService.objects.filter(id=pk).first()
         if not svc:
             return error_response("Service not found.", 404)
 
@@ -2187,21 +2292,21 @@ class StoreServiceDetailView(APIView):
                 svc.canonical_service = can
 
         svc.save()
+        if outlet:
+            bump_availability_version(outlet.id)
         return success_response(StoreServiceLiteSerializer(svc).data, "Service updated successfully")
 
     def delete(self, request, pk):
-        outlet = getattr(request.user, 'outlet', None)
-        if not outlet and hasattr(request.user, 'store') and request.user.store:
-            outlet = request.user.store.outlet
-        if not outlet or not outlet.store_group_id:
-            return error_response("Your account is not linked to an active store outlet.", 400)
-
-        svc = StoreService.objects.filter(id=pk, store_group_id=outlet.store_group_id).first()
+        outlet = _resolve_store_service_outlet(request)
+        svc = StoreService.objects.filter(id=pk).first()
         if not svc:
             return error_response("Service not found.", 404)
 
         svc.is_active_in_store = False
         svc.save(update_fields=['is_active_in_store'])
+        if outlet:
+            bump_availability_version(outlet.id)
+        return success_response({"id": str(pk)}, "Service deactivated successfully")
         return success_response({"id": str(pk)}, "Service deactivated successfully")
 class CustomerLookupView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]
@@ -2211,9 +2316,12 @@ class CustomerLookupView(APIView):
         phone = serializer.validated_data.get('phone')
         name = serializer.validated_data['name']
         if phone:
-            customer, _ = GlobalCustomer.objects.get_or_create(
+            customer, created = GlobalCustomer.objects.get_or_create(
                 phone_e164=normalize_e164(phone), defaults={'name': name}
             )
+            if not created and name and (not customer.name or '@' in customer.name or customer.name.startswith('+') or customer.name.isdigit() or customer.name == "Valued Customer"):
+                customer.name = name
+                customer.save(update_fields=['name'])
         else:
             customer = GlobalCustomer.objects.create(name=name)
         return success_response(GlobalCustomerLiteSerializer(customer).data, "Customer resolved")
@@ -2582,13 +2690,34 @@ class QueueViewSet(viewsets.ModelViewSet):
     serializer_class = QueueEntrySerializer
     permission_classes = [IsAuthenticated, IsOutletStaff]
     ACTIVE_STATUSES = [QueueEntryStatus.WAITING, QueueEntryStatus.CALLED, QueueEntryStatus.IN_SERVICE]
+
+    def _resolve_outlet(self):
+        user = self.request.user
+        if getattr(user, 'outlet', None):
+            return user.outlet
+        if getattr(user, 'store', None) and getattr(user.store, 'outlet', None):
+            return user.store.outlet
+        store_id = self.request.headers.get('X-Store-Id') or self.request.META.get('HTTP_X_STORE_ID')
+        if store_id:
+            st = Store.objects.filter(id=store_id).select_related('outlet').first()
+            if st and st.outlet:
+                return st.outlet
+        if getattr(user, 'outlet_id', None):
+            o = Outlet.objects.filter(id=user.outlet_id).first()
+            if o:
+                return o
+        return Outlet.objects.first()
+
     def get_queryset(self):
-        qs = QueueEntry.objects.filter(outlet_id=self.request.user.outlet_id).select_related(
-            'customer', 'store_service', 'professional'
-        )
+        outlet = self._resolve_outlet()
+        qs = QueueEntry.objects.all()
+        if outlet:
+            qs = qs.filter(outlet=outlet)
+        qs = qs.select_related('customer', 'store_service', 'professional')
         if self.action == 'list':
             qs = qs.filter(status__in=self.ACTIVE_STATUSES)
         return qs
+
     def _position_and_wait_context(self, entries):
         waiting = [e for e in entries if e.status == QueueEntryStatus.WAITING]
         waiting.sort(key=lambda e: e.checked_in_at)
@@ -2598,31 +2727,47 @@ class QueueViewSet(viewsets.ModelViewSet):
             waits[e.id] = running_total
             running_total += (e.store_service.duration_min if e.store_service else DEFAULT_QUEUE_WAIT_MINUTES)
         return {'positions': positions, 'waits': waits}
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         if self.action == 'list':
             context.update(self._position_and_wait_context(list(self.get_queryset())))
         return context
+
     def perform_create(self, serializer):
-        serializer.save(outlet_id=self.request.user.outlet_id)
+        outlet = self._resolve_outlet()
+        serializer.save(outlet=outlet)
+
     def _transition(self, request, pk, new_status, timestamp_field):
         entry = self.get_object()
         entry.status = new_status
         setattr(entry, timestamp_field, timezone.now())
         entry.save(update_fields=['status', timestamp_field])
         return success_response(QueueEntrySerializer(entry).data, f"Marked {new_status}")
+
     @action(detail=True, methods=['post'])
     def call(self, request, pk=None):
         return self._transition(request, pk, QueueEntryStatus.CALLED, 'called_at')
+
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         return self._transition(request, pk, QueueEntryStatus.IN_SERVICE, 'started_at')
+
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
         return self._transition(request, pk, QueueEntryStatus.COMPLETED, 'completed_at')
-    @action(detail=True, methods=['post'])
+
+    @action(detail=True, methods=['post', 'delete'])
     def cancel(self, request, pk=None):
         return self._transition(request, pk, QueueEntryStatus.CANCELLED, 'completed_at')
+
+    def destroy(self, request, *args, **kwargs):
+        entry = self.get_object()
+        entry.status = QueueEntryStatus.CANCELLED
+        entry.completed_at = timezone.now()
+        entry.save(update_fields=['status', 'completed_at'])
+        return success_response(None, "Queue entry cancelled", status_code=200)
+
     @action(detail=True, methods=['post'], url_path='no-show')
     def no_show(self, request, pk=None):
         return self._transition(request, pk, QueueEntryStatus.NO_SHOW, 'completed_at')

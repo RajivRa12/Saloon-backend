@@ -1,21 +1,34 @@
 import json
 import urllib.request
 import urllib.error
+import threading
+
 EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
+
 def notify_user(user, title, message, notif_type='SYSTEM', data=None):
     """Create a Notification row (read by the in-app bell) and, if the user
-    has registered a push token, send a push too. Central place for any
-    event that should alert a user — new booking, chat message, tip, review."""
+    has registered a push token, send a push asynchronously with a timeout."""
     if not user:
         return
     from apps.core.models import Notification
-    Notification.objects.create(user=user, title=title, message=message, type=notif_type)
+    try:
+        Notification.objects.create(user=user, title=title, message=message, type=notif_type)
+    except Exception as e:
+        print(f"Failed to create Notification row: {e}")
+
     token = getattr(user, 'expo_push_token', None)
     if token:
-        send_expo_push_notification(token, title, message, data=data)
+        try:
+            threading.Thread(
+                target=send_expo_push_notification,
+                args=(token, title, message, data),
+                daemon=True
+            ).start()
+        except Exception as e:
+            print(f"Failed to start push notification thread: {e}")
+
 def send_expo_push_notification(token, title, body, data=None):
     if not token or not token.startswith("ExponentPushToken"):
-        print(f"Invalid Expo Push Token: {token}")
         return False
     headers = {
         'Accept': 'application/json',
@@ -36,10 +49,9 @@ def send_expo_push_notification(token, title, body, data=None):
         method='POST'
     )
     try:
-        response = urllib.request.urlopen(req)
+        response = urllib.request.urlopen(req, timeout=3)
         response_data = json.loads(response.read().decode('utf-8'))
-        print(f"Expo push response: {response_data}")
         return True
-    except urllib.error.URLError as e:
+    except Exception as e:
         print(f"Failed to send Expo push notification: {e}")
         return False

@@ -104,6 +104,7 @@ class CommissionAccrualSerializer(serializers.ModelSerializer):
 class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
     outlet_name = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
+    customer_phone = serializers.SerializerMethodField()
     store_service_name = serializers.SerializerMethodField()
     items = serializers.SerializerMethodField()
     notes = serializers.CharField(source='booking.notes', read_only=True)
@@ -114,7 +115,7 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = AppointmentSlot
         fields = [
-            'id', 'booking', 'store_service_name', 'items', 'notes', 'outlet_name', 'customer_name', 'slot_start', 'slot_end',
+            'id', 'booking', 'store_service_name', 'items', 'notes', 'outlet_name', 'customer_name', 'customer_phone', 'slot_start', 'slot_end',
             'actual_start_time', 'actual_end_time', 'start_variance_minutes', 'end_variance_minutes',
             'override_reason', 'was_overridden',
             'price_paise', 'status', 'is_home_service', 'service_address', 'on_the_way_at',
@@ -125,22 +126,26 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
             return 'cancelled'
         return obj.status
     def get_outlet_name(self, obj):
-        return obj.booking.outlet.name
+        return obj.booking.outlet.name if obj.booking and obj.booking.outlet else "Salon Venue"
     def get_customer_name(self, obj):
-        if not obj.booking.customer_id:
+        if not obj.booking or not obj.booking.customer_id:
+            return "Walk-in"
+        from apps.core.models import resolve_customer_name
+        fallback_ph = getattr(obj.booking, 'customer_phone', None)
+        return resolve_customer_name(obj.booking.customer, fallback_phone=fallback_ph)
+    def get_customer_phone(self, obj):
+        if not obj.booking or not obj.booking.customer_id:
             return None
         c = obj.booking.customer
-        name = c.name or ''
-        phone = c.phone_e164 or ''
-        if not name or '@phone.nearbyme.local' in name:
-            raw_p = phone or (name.split('@')[0] if name else "")
-            if len(raw_p) == 12 and raw_p.startswith('91'):
-                ten = raw_p[2:]
-                return f"+91 {ten[:5]} {ten[5:]}"
-            elif len(raw_p) == 10:
-                return f"+91 {raw_p[:5]} {raw_p[5:]}"
-            return raw_p or "Customer"
-        return name
+        phone = (c.phone_e164 or '').strip()
+        if not phone and c.name and '@phone.nearbyme.local' in c.name:
+            phone = c.name.split('@')[0]
+        digits = ''.join(ch for ch in phone if ch.isdigit())
+        if len(digits) == 12 and digits.startswith('91'):
+            return f"+91 {digits[2:7]} {digits[7:]}"
+        elif len(digits) == 10:
+            return f"+91 {digits[:5]} {digits[5:]}"
+        return phone or None
 
     def get_store_service_name(self, obj):
         if obj.booking_id:

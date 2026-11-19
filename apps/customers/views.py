@@ -14,7 +14,7 @@ from apps.core.models import (
     Store, ServiceCategory, Service, User, Role,
     Appointment, Wallet, CustomerMembership, Review,
     GiftCard, CustomerPackage, FavoriteTherapist, CustomerFavourite, Invoice, Coupon, Tip, WalletTransaction,
-    Booking, GlobalCustomer, normalize_e164,
+    Booking, GlobalCustomer, normalize_e164, resolve_customer_name,
     Notification, ProfessionalReview,
     Conversation, ChatMessage, Referral,
     SlotHold, SlotHoldStatus, Professional, Resource, ResourceType,
@@ -50,6 +50,20 @@ class MicrositeView(generics.RetrieveAPIView):
     serializer_class = MicrositeSerializer
     lookup_field = 'slug'
     queryset = StorePublicProfile.objects.filter(is_microsite_live=True).select_related('store')
+def _clean_customer_defaults(user, req_name=None):
+    if req_name:
+        req = str(req_name).strip()
+        if req and '@' not in req and not req.startswith('+') and not req.isdigit() and req not in ('Valued Customer', 'Valued Client', 'Client'):
+            return {'name': req, 'email': user.email if '@phone.nearbyme.local' not in (user.email or '') else None}
+    name = (user.get_full_name() or user.first_name or '').strip()
+    if name and '@' not in name and not name.startswith('+') and not name.isdigit():
+        return {'name': name, 'email': user.email if '@phone.nearbyme.local' not in (user.email or '') else None}
+    digits = ''.join(ch for ch in str(getattr(user, 'phone', '') or '') if ch.isdigit())
+    last4 = digits[-4:] if len(digits) >= 4 else ''
+    clean_name = f"Client {last4}" if last4 else "Valued Client"
+    return {'name': clean_name, 'email': user.email if '@phone.nearbyme.local' not in (user.email or '') else None}
+
+
 class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Store.objects.filter(status='ACTIVE').select_related('platform_subscription__plan', 'public_profile')
     serializer_class = PublicStoreSerializer
@@ -267,12 +281,16 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
         except PaymentsNotConfigured as e:
             return error_response(str(e), 503)
         user = request.user
+        cust_defaults = _clean_customer_defaults(user)
         if user.phone:
-            customer, _ = GlobalCustomer.objects.get_or_create(
-                phone_e164=normalize_e164(user.phone), defaults={'name': user.get_full_name() or user.email, 'email': user.email}
+            customer, created = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(user.phone), defaults=cust_defaults
             )
         else:
-            customer, _ = GlobalCustomer.objects.get_or_create(email=user.email, defaults={'name': user.get_full_name() or user.email})
+            customer, created = GlobalCustomer.objects.get_or_create(email=user.email, defaults=cust_defaults)
+        if not created and (not customer.name or '@' in customer.name or customer.name.startswith('+') or customer.name.isdigit() or customer.name == 'Valued Customer'):
+            customer.name = cust_defaults['name']
+            customer.save(update_fields=['name'])
         payment = OnlinePayment.objects.create(
             hold=hold, store_service=svc, customer=customer, payment_type=payment_type,
             amount_paise=amount_paise, total_amount_paise=total_amount_paise, gateway_order_id=order['id'],
@@ -352,12 +370,16 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
             online_payment.confirmed_at = timezone.now()
             online_payment.save(update_fields=['status', 'gateway_payment_id', 'gateway_signature', 'confirmed_at'])
         user = request.user
+        cust_defaults = _clean_customer_defaults(user)
         if user.phone:
-            customer, _ = GlobalCustomer.objects.get_or_create(
-                phone_e164=normalize_e164(user.phone), defaults={'name': user.get_full_name() or user.email, 'email': user.email}
+            customer, created = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(user.phone), defaults=cust_defaults
             )
         else:
-            customer, _ = GlobalCustomer.objects.get_or_create(email=user.email, defaults={'name': user.get_full_name() or user.email})
+            customer, created = GlobalCustomer.objects.get_or_create(email=user.email, defaults=cust_defaults)
+        if not created and (not customer.name or '@' in customer.name or customer.name.startswith('+') or customer.name.isdigit() or customer.name == 'Valued Customer'):
+            customer.name = cust_defaults['name']
+            customer.save(update_fields=['name'])
         booking = Booking.objects.create(
             outlet_id=store.outlet_id, customer=customer, source=BookingSource.ONLINE,
             status=BookingStatus.DRAFT, booking_start=slot_start, booking_end=slot_end,
@@ -712,12 +734,16 @@ class StoreFavouriteViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsCustomer]
     def _resolve_customer(self):
         user = self.request.user
+        cust_defaults = _clean_customer_defaults(user)
         if user.phone:
-            customer, _ = GlobalCustomer.objects.get_or_create(
-                phone_e164=normalize_e164(user.phone), defaults={'name': user.get_full_name() or user.email, 'email': user.email}
+            customer, created = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(user.phone), defaults=cust_defaults
             )
-            return customer
-        customer, _ = GlobalCustomer.objects.get_or_create(email=user.email, defaults={'name': user.get_full_name() or user.email})
+        else:
+            customer, created = GlobalCustomer.objects.get_or_create(email=user.email, defaults=cust_defaults)
+        if not created and (not customer.name or '@' in customer.name or customer.name.startswith('+') or customer.name.isdigit() or customer.name == 'Valued Customer'):
+            customer.name = cust_defaults['name']
+            customer.save(update_fields=['name'])
         return customer
     def get_queryset(self):
         return CustomerFavourite.objects.filter(customer=self._resolve_customer()).select_related('store', 'professional_account')
@@ -761,12 +787,31 @@ class CustomerConversationViewSet(viewsets.ModelViewSet):
             except (ValueError, TypeError):
                 pass
             if not therapist:
+                try:
+                    import uuid as _u
+                    p_uuid = _u.UUID(str(therapist_id))
+                    from apps.core.models import Professional
+                    prof = Professional.objects.filter(id=p_uuid).select_related('user_account__user').first()
+                    if prof and prof.user_account and prof.user_account.user:
+                        therapist = prof.user_account.user
+                except Exception:
+                    pass
+            if not therapist:
                 therapist = User.objects.filter(role=Role.THERAPIST, is_active=True).first()
         else:
             therapist = User.objects.filter(role=Role.THERAPIST, is_active=True).first()
 
         if not therapist:
-            return error_response("Therapist not found.", 404)
+            from apps.core.models import Professional
+            prof = Professional.objects.filter(user_account__user__isnull=False).first()
+            if prof and prof.user_account and prof.user_account.user:
+                therapist = prof.user_account.user
+
+        if not therapist:
+            therapist = User.objects.filter(is_staff=True, is_active=True).first() or User.objects.filter(is_active=True).exclude(id=request.user.id).first()
+
+        if not therapist:
+            return error_response("No specialist is available to chat right now.", 404)
         convo, created = Conversation.objects.get_or_create(customer=request.user, therapist=therapist)
         initial_msg = (request.data.get('content') or request.data.get('message') or '').strip()
         if initial_msg:
@@ -845,16 +890,239 @@ class PublicCouponViewSet(viewsets.ReadOnlyModelViewSet):
         qs = Coupon.objects.filter(is_active=True, end_date__gte=now).order_by('-created_at')
         store_id = self.request.query_params.get('store_id') or self.request.query_params.get('store')
         if store_id:
-            qs = qs.filter(Q(store_id=store_id) | Q(store__isnull=True))
+            cleaned_id = str(store_id).replace('salon-', '').replace('store-', '').strip()
+            if cleaned_id.isdigit():
+                qs = qs.filter(Q(store_id=int(cleaned_id)) | Q(store__isnull=True))
+            else:
+                qs = qs.filter(Q(store__slug__iexact=cleaned_id) | Q(store__name__icontains=cleaned_id) | Q(store__isnull=True))
+
+        city_param = (self.request.query_params.get('city') or '').strip().lower()
+        if city_param and city_param not in ['all', 'all cities']:
+            if 'chennai' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Chennai') |
+                    Q(store__address__icontains='Chennai') |
+                    Q(store__outlet__address_line__icontains='Chennai')
+                )
+            elif 'bengaluru' in city_param or 'bangalore' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Bengaluru') |
+                    Q(store__address__icontains='Bengaluru') |
+                    Q(store__address__icontains='Bangalore') |
+                    Q(store__outlet__address_line__icontains='Bengaluru') |
+                    (Q(store__isnull=False) & ~Q(store__address__icontains='chennai') & ~Q(store__outlet__city__name__iexact='Chennai') & ~Q(store__address__icontains='mumbai') & ~Q(store__address__icontains='delhi') & ~Q(store__address__icontains='hyderabad'))
+                )
+            elif 'mumbai' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Mumbai') |
+                    Q(store__address__icontains='Mumbai') |
+                    Q(store__outlet__address_line__icontains='Mumbai')
+                )
+            elif 'delhi' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Delhi') |
+                    Q(store__address__icontains='Delhi') |
+                    Q(store__outlet__address_line__icontains='Delhi')
+                )
+            elif 'hyderabad' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Hyderabad') |
+                    Q(store__address__icontains='Hyderabad') |
+                    Q(store__outlet__address_line__icontains='Hyderabad')
+                )
+            else:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact=city_param) |
+                    Q(store__address__icontains=city_param) |
+                    Q(store__outlet__address_line__icontains=city_param)
+                )
         return qs
+
+    @action(detail=False, methods=['post'], url_path='validate', permission_classes=[AllowAny])
+    def validate_coupon(self, request):
+        from django.utils import timezone
+        from django.db.models import Q
+        now = timezone.now()
+
+        code = str(request.data.get('code') or '').strip().upper()
+        if not code:
+            return Response({"success": False, "message": "Please enter a coupon code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        coupon = Coupon.objects.filter(code__iexact=code).first()
+        if not coupon:
+            return Response({"success": False, "message": f"Coupon code '{code}' does not exist."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not coupon.is_active:
+            return Response({"success": False, "message": f"Coupon '{coupon.code}' is no longer active."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if coupon.start_date and coupon.start_date > now:
+            return Response({"success": False, "message": f"Coupon '{coupon.code}' is not valid until {coupon.start_date.strftime('%d %b %Y')}."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if coupon.end_date and coupon.end_date < now:
+            return Response({"success": False, "message": f"Coupon '{coupon.code}' expired on {coupon.end_date.strftime('%d %b %Y')}."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
+            return Response({"success": False, "message": f"Coupon '{coupon.code}' usage limit has been reached."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check store association if the coupon belongs to a specific store
+        store_param = request.data.get('store_id') or request.data.get('store')
+        city_param = (request.data.get('city') or '').strip().lower()
+
+        if coupon.store_id and store_param:
+            cleaned_id = str(store_param).replace('salon-', '').replace('store-', '').strip()
+            target_store = None
+            if cleaned_id.isdigit():
+                target_store = Store.objects.filter(id=int(cleaned_id)).first()
+            if not target_store:
+                target_store = Store.objects.filter(Q(slug=cleaned_id) | Q(name__iexact=cleaned_id)).first()
+
+            # If target_store is found and does not match coupon's store
+            if target_store and target_store.id != coupon.store_id:
+                store_name = coupon.store.name if coupon.store else "another salon"
+                return Response({
+                    "success": False,
+                    "message": f"Coupon '{coupon.code}' is only valid at {store_name}."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check city compatibility
+        if coupon.store:
+            coupon_city = ""
+            if coupon.store.outlet and coupon.store.outlet.city:
+                coupon_city = coupon.store.outlet.city.name.lower()
+            elif 'chennai' in (coupon.store.address or '').lower():
+                coupon_city = 'chennai'
+            elif 'bengaluru' in (coupon.store.address or '').lower() or 'bangalore' in (coupon.store.address or '').lower():
+                coupon_city = 'bengaluru'
+
+            if city_param and coupon_city and city_param not in ['all', 'all cities']:
+                if (city_param == 'chennai' and coupon_city != 'chennai') or (city_param == 'bengaluru' and coupon_city != 'bengaluru'):
+                    return Response({
+                        "success": False,
+                        "message": f"Coupon '{coupon.code}' is only valid in {coupon_city.capitalize()}."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Calculate discount preview if amount/subtotal provided
+        subtotal_val = request.data.get('subtotal') or request.data.get('amount')
+        discount_amount = 0
+        if subtotal_val is not None:
+            try:
+                subtotal = float(subtotal_val)
+                d_val = float(coupon.discount_value)
+                if coupon.discount_type == 'PERCENTAGE':
+                    pct_discount = round((subtotal * d_val) / 100, 2)
+                    if coupon.maximum_discount:
+                        discount_amount = min(pct_discount, float(coupon.maximum_discount))
+                    else:
+                        discount_amount = pct_discount
+                else:
+                    discount_amount = min(subtotal, d_val)
+            except (ValueError, TypeError):
+                pass
+
+        serializer = PublicCouponSerializer(coupon)
+        coupon_data = dict(serializer.data)
+        coupon_data['discount_amount'] = discount_amount
+        return Response({
+            "success": True,
+            "message": f"Coupon '{coupon.code}' applied successfully!",
+            "coupon": coupon_data
+        }, status=status.HTTP_200_OK)
 class PublicTherapistViewSet(viewsets.ReadOnlyModelViewSet):
-    def get_queryset(self):
-        from django.db.models import Count
-        return User.objects.filter(role=Role.THERAPIST, is_active=True).annotate(
-            follower_count=Count('favorited_by')
-        ).order_by('-follower_count')[:10]
     serializer_class = PublicTherapistSerializer
     permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        from django.db.models import Count, Q
+        qs = User.objects.filter(role=Role.THERAPIST, is_active=True).annotate(
+            follower_count=Count('favorited_by')
+        )
+        city_param = (self.request.query_params.get('city') or '').strip().lower()
+        if city_param and city_param not in ['all', 'all cities']:
+            if 'chennai' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Chennai') |
+                    Q(store__address__icontains='Chennai') |
+                    Q(outlet__city__name__iexact='Chennai') |
+                    Q(outlet__address_line__icontains='Chennai')
+                )
+            elif 'bengaluru' in city_param or 'bangalore' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Bengaluru') |
+                    Q(store__address__icontains='Bengaluru') |
+                    Q(store__address__icontains='Bangalore') |
+                    Q(outlet__city__name__iexact='Bengaluru') |
+                    Q(outlet__address_line__icontains='Bengaluru') |
+                    (Q(store__isnull=False) & ~Q(store__address__icontains='chennai') & ~Q(store__outlet__city__name__iexact='Chennai') & ~Q(store__address__icontains='mumbai') & ~Q(store__address__icontains='delhi') & ~Q(store__address__icontains='hyderabad'))
+                )
+            elif 'mumbai' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Mumbai') |
+                    Q(store__address__icontains='Mumbai') |
+                    Q(outlet__city__name__iexact='Mumbai')
+                )
+            elif 'delhi' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Delhi') |
+                    Q(store__address__icontains='Delhi') |
+                    Q(outlet__city__name__iexact='Delhi')
+                )
+            elif 'hyderabad' in city_param:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact='Hyderabad') |
+                    Q(store__address__icontains='Hyderabad') |
+                    Q(outlet__city__name__iexact='Hyderabad')
+                )
+            else:
+                qs = qs.filter(
+                    Q(store__outlet__city__name__iexact=city_param) |
+                    Q(store__address__icontains=city_param) |
+                    Q(outlet__city__name__iexact=city_param)
+                )
+        return qs.order_by('-follower_count')[:10]
+
+    def list(self, request, *args, **kwargs):
+        from django.db.models import Q
+        city_param = (request.query_params.get('city') or '').strip().lower()
+        users = list(self.get_queryset())
+        data = list(self.get_serializer(users, many=True).data)
+
+        # Complement with active Professionals from this city if fewer than 4
+        if city_param and city_param not in ['all', 'all cities']:
+            from apps.core.models import Professional
+            profs_qs = Professional.objects.filter(deleted_at__isnull=True, is_bookable=True).select_related('outlet', 'outlet__city')
+            if 'chennai' in city_param:
+                profs_qs = profs_qs.filter(
+                    Q(outlet__city__name__iexact='Chennai') |
+                    Q(outlet__address_line__icontains='Chennai')
+                )
+            elif 'bengaluru' in city_param or 'bangalore' in city_param:
+                profs_qs = profs_qs.filter(
+                    Q(outlet__city__name__iexact='Bengaluru') |
+                    Q(outlet__address_line__icontains='Bengaluru')
+                )
+            else:
+                profs_qs = profs_qs.filter(
+                    Q(outlet__city__name__icontains=city_param) |
+                    Q(outlet__address_line__icontains=city_param)
+                )
+
+            existing_names = {str(d.get('name') or '').lower() for d in data}
+            for p in profs_qs[:6]:
+                name = p.display_name or "Specialist"
+                if name.lower() not in existing_names:
+                    p_city = p.outlet.city.name if p.outlet and p.outlet.city else city_param.capitalize()
+                    data.append({
+                        'id': str(p.id),
+                        'first_name': name.split(' ')[0],
+                        'last_name': ' '.join(name.split(' ')[1:]) if ' ' in name else '',
+                        'name': name,
+                        'city': p_city,
+                        'store_name': p.outlet.name if p.outlet else '',
+                        'role': getattr(p, 'display_role', None) or 'Top Rated',
+                    })
+                    existing_names.add(name.lower())
+
+        return Response(data)
 class CustomerBookingViewSet(viewsets.ModelViewSet):
     """Phase1 (GlobalCustomer/Booking) bookings for the logged-in customer, with
     actions to create, tip a professional directly, and to review a completed booking."""
@@ -888,25 +1156,36 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
         try:
             user = request.user
             customer = None
+            cust_name_req = (request.data.get('customer_name') or request.data.get('name') or user.get_full_name() or '').strip()
+            if '@' in cust_name_req or cust_name_req.startswith('+') or cust_name_req.isdigit():
+                cust_name_req = ""
+            default_cust_name = _clean_customer_defaults(user, cust_name_req)['name']
+
             if getattr(user, 'phone', None):
                 norm_phone = normalize_e164(user.phone)
                 customer = GlobalCustomer.objects.filter(phone_e164=norm_phone).first()
                 if not customer:
                     customer = GlobalCustomer.objects.create(
                         phone_e164=norm_phone,
-                        name=user.get_full_name() or user.username or "Valued Customer",
+                        name=default_cust_name,
                         email=user.email or None,
                     )
+                elif cust_name_req or not customer.name or '@' in customer.name or customer.name.startswith('+') or customer.name.isdigit() or customer.name == "Valued Customer":
+                    customer.name = default_cust_name
+                    customer.save(update_fields=['name'])
             elif getattr(user, 'email', None):
                 customer = GlobalCustomer.objects.filter(email=user.email).first()
                 if not customer:
                     customer = GlobalCustomer.objects.create(
                         email=user.email,
-                        name=user.get_full_name() or user.username or "Valued Customer",
+                        name=default_cust_name,
                     )
+                elif cust_name_req or not customer.name or '@' in customer.name or customer.name.startswith('+') or customer.name.isdigit() or customer.name == "Valued Customer":
+                    customer.name = default_cust_name
+                    customer.save(update_fields=['name'])
             else:
                 customer = GlobalCustomer.objects.create(
-                    name=getattr(user, 'username', None) or "Valued Customer"
+                    name=default_cust_name
                 )
 
             # Resolve Store
@@ -917,7 +1196,14 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                 if cleaned_id.isdigit():
                     store = Store.objects.filter(id=int(cleaned_id)).first()
                 if not store:
-                    store = Store.objects.filter(slug=str(store_id)).first() or Store.objects.filter(name__icontains=cleaned_id).first()
+                    try:
+                        import uuid as _u
+                        u_val = _u.UUID(cleaned_id)
+                        store = Store.objects.filter(outlet_id=u_val).first() or Store.objects.filter(business_id=u_val).first()
+                    except Exception:
+                        pass
+                if not store:
+                    store = Store.objects.filter(name__icontains=cleaned_id).first()
 
             if not store:
                 store = Store.objects.filter(status='ACTIVE', outlet__isnull=False).first() or Store.objects.first()
@@ -1111,7 +1397,7 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                     booking_end=slot_end,
                     is_home_service=is_home,
                     service_address=service_addr or None,
-                    notes=request.data.get('notes') or None,
+                    notes=request.data.get('notes') or (f"Services: {req_name}" if req_name else None),
                 )
 
                 if isinstance(services_list, list) and len(services_list) > 1:
@@ -1121,10 +1407,21 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                         item_name = str(item.get('name') or item.get('service_name') or '').strip()
                         item_svc = None
                         if item_id:
-                            try:
-                                item_svc = StoreService.objects.filter(id=_uuid.UUID(item_id)).first()
-                            except Exception:
-                                pass
+                            if item_id.isdigit():
+                                from apps.core.models import Service
+                                legacy_svc = Service.objects.filter(id=int(item_id)).first()
+                                if legacy_svc:
+                                    if not item_name:
+                                        item_name = legacy_svc.name
+                                    if outlet and outlet.store_group:
+                                        item_svc = StoreService.objects.filter(store_group=outlet.store_group, name__iexact=legacy_svc.name).first()
+                                    if not item_svc:
+                                        item_svc = StoreService.objects.filter(name__iexact=legacy_svc.name).first()
+                            else:
+                                try:
+                                    item_svc = StoreService.objects.filter(id=_uuid.UUID(item_id)).first()
+                                except Exception:
+                                    pass
                         if not item_svc and item_name:
                             if outlet and outlet.store_group:
                                 item_svc = StoreService.objects.filter(store_group=outlet.store_group, name__iexact=item_name).first() or StoreService.objects.filter(store_group=outlet.store_group, name__icontains=item_name).first()
@@ -1252,6 +1549,15 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                 except Exception as inv_err:
                     logger.warning("Could not auto-create invoice for booking %s: %s", booking.id, inv_err)
 
+                # Increment coupon used_count if a coupon code was applied
+                coupon_code = request.data.get('coupon_code')
+                if coupon_code:
+                    try:
+                        from django.db.models import F
+                        Coupon.objects.filter(code__iexact=str(coupon_code).strip()).update(used_count=F('used_count') + 1)
+                    except Exception as coup_err:
+                        logger.warning("Could not increment coupon count for code %s: %s", coupon_code, coup_err)
+
             booking.refresh_from_db()
             return success_response(CustomerBookingSerializer(booking).data, "Appointment booked successfully.", status_code=201)
         except Exception as e:
@@ -1347,38 +1653,92 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
         }, "Tip initiated. Complete payment via your UPI app.", 201)
     @action(detail=True, methods=['post'])
     def review(self, request, pk=None):
-        from apps.core.models import BookingStatus, ProfessionalReview
+        from apps.core.models import BookingStatus, ProfessionalReview, GlobalCustomer, normalize_e164
         booking = self.get_object()
         if booking.status != BookingStatus.COMPLETED:
             return error_response("You can only review a completed booking.", 400)
         serializer = BookingReviewRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        customer = self._get_global_customer()
-        if ProfessionalReview.objects.filter(booking=booking, customer=customer).exists():
-            return error_response("You have already reviewed this booking.", 400)
+
+        customer = self._get_global_customer() or booking.customer
+        if not customer and request.user.is_authenticated:
+            user = request.user
+            customer, _ = GlobalCustomer.objects.get_or_create(
+                phone_e164=normalize_e164(user.phone) if user.phone else "+919999999999",
+                defaults={"name": user.get_full_name() or user.first_name or "Valued Client", "email": user.email}
+            )
+
         professional_id = data.get('professional_id')
+        slot = None
         if professional_id:
-            slot = booking.slots.filter(professional_id=professional_id).select_related('professional').first()
-        else:
+            try:
+                import uuid as _u
+                slot = booking.slots.filter(professional_id=_u.UUID(str(professional_id))).select_related('professional').first()
+            except Exception:
+                slot = booking.slots.filter(professional_id=professional_id).select_related('professional').first()
+        if not slot:
             slot = booking.slots.exclude(professional__isnull=True).select_related('professional').first()
+
         professional_account = None
         if slot and slot.professional_id and slot.professional.user_account_id:
             professional_account = slot.professional.user_account
-        review = ProfessionalReview.objects.create(
-            booking=booking, customer=customer, store_group=booking.outlet.store_group,
-            professional_account=professional_account,
-            store_rating=data['store_rating'],
-            professional_rating=data.get('professional_rating'),
-            comment=data.get('comment'),
-            media_url=data.get('media_url'),
-        )
+
+        existing_review = ProfessionalReview.objects.filter(booking=booking).first()
+        if existing_review:
+            existing_review.store_rating = data['store_rating']
+            existing_review.professional_rating = data.get('professional_rating') or data['store_rating']
+            existing_review.comment = data.get('comment') or ""
+            if professional_account:
+                existing_review.professional_account = professional_account
+            existing_review.save()
+            review = existing_review
+        else:
+            review = ProfessionalReview.objects.create(
+                booking=booking,
+                customer=customer,
+                store_group=booking.outlet.store_group,
+                professional_account=professional_account,
+                store_rating=data['store_rating'],
+                professional_rating=data.get('professional_rating') or data['store_rating'],
+                comment=data.get('comment') or "",
+                media_url=data.get('media_url'),
+            )
+
+        # Also sync to legacy/staff Review model so the review immediately appears in TherapistWeb & StoreAdmin
+        try:
+            from apps.core.models import Review, Store
+            th_user = None
+            if slot and slot.professional:
+                if slot.professional.user_account and slot.professional.user_account.user:
+                    th_user = slot.professional.user_account.user
+                elif hasattr(slot.professional, 'user') and slot.professional.user:
+                    th_user = slot.professional.user
+
+            store_obj = booking.outlet.legacy_stores.first() if (booking.outlet and hasattr(booking.outlet, 'legacy_stores')) else Store.objects.first()
+            if store_obj:
+                cust_disp_name = (customer.name if customer and customer.name else request.user.get_full_name()) or "Customer"
+                Review.objects.update_or_create(
+                    store=store_obj,
+                    customer_name=cust_disp_name,
+                    therapist=th_user,
+                    defaults={
+                        "customer_email": getattr(customer, 'email', None) or request.user.email,
+                        "rating": data.get('professional_rating') or data['store_rating'],
+                        "comment": data.get('comment') or "",
+                        "status": 'APPROVED',
+                    }
+                )
+        except Exception as rev_err:
+            logger.warning("Could not sync review to store Review model: %s", rev_err)
+
         if professional_account and professional_account.user_id:
             from apps.core.notifications import notify_user
             stars = review.professional_rating or review.store_rating
+            cust_name = customer.name if customer and customer.name else "Client"
             notify_user(
                 professional_account.user, "New review",
-                f"{customer.name} left you a {stars}★ review.",
+                f"{cust_name} left you a {stars}★ review.",
                 notif_type='NEW_REVIEW', data={"review_id": str(review.id)},
             )
         return success_response({

@@ -23,6 +23,20 @@ class RegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     store_name = serializers.CharField(source='store.name', read_only=True)
     outlet_name = serializers.CharField(source='outlet.name', read_only=True)
+    outlet_id = serializers.SerializerMethodField()
+
+    def get_outlet_id(self, obj):
+        if getattr(obj, 'outlet_id', None):
+            return str(obj.outlet_id)
+        if getattr(obj, 'store', None) and getattr(obj.store, 'outlet_id', None):
+            return str(obj.store.outlet_id)
+        from apps.core.models import Store, Outlet
+        st = getattr(obj, 'store', None) or Store.objects.first()
+        if st and st.outlet_id:
+            return str(st.outlet_id)
+        first_out = Outlet.objects.first()
+        return str(first_out.id) if first_out else None
+
     class Meta:
         model = User
         fields = ('id', 'email', 'first_name', 'last_name', 'role', 'brand_id', 'store_id', 'outlet_id', 'store_name', 'outlet_name')

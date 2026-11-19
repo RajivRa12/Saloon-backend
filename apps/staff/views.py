@@ -9,6 +9,7 @@ from apps.core.models import (
     CustomerNote, TherapistProfile, Announcement, TrainingVideo, TrainingCourse, Wallet,
     Notification, Attendance, AttendanceStatus, StaffTarget,
     Review, StaffIncentive, Conversation, ChatMessage, Payroll, LeaveRequest,
+    resolve_customer_name,
 )
 from .serializers import (
     TherapistProfileSerializer, TherapistAppointmentSerializer,
@@ -267,9 +268,17 @@ class TherapistDashboardViewSet(viewsets.ViewSet):
             booking__status__in=[BookingStatus.CANCELLED, 'CANCELLED', 'cancelled']
         ).count()
 
-        today_commissions = Commission.objects.filter(therapist=therapist, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
+        # 1. Calculate Gross Service Sales generated today (daily base service payments)
+        today_service_sales = Decimal('0.00')
+        from apps.core.models import AppointmentItem, AppointmentStatus
+        for item in AppointmentItem.objects.filter(
+            therapist=therapist,
+            appointment__status=AppointmentStatus.COMPLETED,
+            appointment__start_time__date=today
+        ):
+            price = item.price or (item.service.price if item.service else Decimal('0.00'))
+            today_service_sales += price
 
-        # Add 30% stylist commission from completed AppointmentSlots today
         done_slots_today = AppointmentSlot.objects.filter(
             professional__user_account__user=therapist,
             status=AppointmentSlotStatus.DONE
@@ -278,7 +287,14 @@ class TherapistDashboardViewSet(viewsets.ViewSet):
         )
         for s in done_slots_today:
             price = Decimal(s.price_paise or 75000) / Decimal(100)
-            today_commissions += price * Decimal('0.30')
+            today_service_sales += price
+
+        # 2. Calculate Therapist Commission (30% of service sales, never 100% of service sales)
+        db_commissions = Commission.objects.filter(therapist=therapist, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00')
+        if db_commissions > 0 and db_commissions < today_service_sales:
+            today_commissions = db_commissions
+        else:
+            today_commissions = (today_service_sales * Decimal('0.30')).quantize(Decimal('0.01'))
 
         from apps.core.models import Tip
         today_tips = Tip.objects.filter(
@@ -290,18 +306,25 @@ class TherapistDashboardViewSet(viewsets.ViewSet):
         today_att = Attendance.objects.filter(staff=therapist, date=today).first()
         is_checked_in = bool(today_att and today_att.clock_in and not today_att.clock_out)
         profile, _ = TherapistProfile.objects.get_or_create(user=therapist)
+        from apps.core.models import Review
+        reviews_cnt = Review.objects.filter(therapist=therapist).count()
+        rev_avg = Review.objects.filter(therapist=therapist).aggregate(avg=Avg('rating'))['avg']
+        avg_rating_str = f"{round(float(rev_avg), 1)} ★" if rev_avg else "4.9 ★"
+
         data = {
             "today_date": str(today),
             "today_appointments": today_appointments,
             "upcoming_bookings": upcoming_appointments,
             "earnings_today": {
+                "service_sales": float(today_service_sales),
                 "commission": float(today_commissions),
                 "tips": float(today_tips),
                 "total": float(total_earnings_today)
             },
             "is_checked_in": is_checked_in,
             "availability_status": getattr(profile, 'availability_status', 'AVAILABLE'),
-            "followers": avg_rating
+            "rating": avg_rating_str,
+            "total_reviews": reviews_cnt,
         }
         return success_response(data, "Therapist dashboard generated")
 class BeforeAfterGalleryViewSet(viewsets.ModelViewSet):
@@ -370,14 +393,17 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
             total_spend = total_spend_paise / 100.0
             avg_spend = (total_spend / visits_count) if visits_count > 0 else 0
 
-            raw_name = cust.name or "Client"
-            if raw_name.startswith("91") and "@phone.nearbyme.local" in raw_name:
-                phone_raw = raw_name.replace("@phone.nearbyme.local", "")
-                display_name = f"+91 {phone_raw[2:7]} {phone_raw[7:]}" if len(phone_raw) == 12 else f"Client ({phone_raw})"
-            else:
-                display_name = raw_name
+            display_name = resolve_customer_name(cust)
 
-            phone = cust.phone_e164 or ""
+            phone_raw = (cust.phone_e164 or "").strip()
+            digits = ''.join(ch for ch in phone_raw if ch.isdigit())
+            if len(digits) == 12 and digits.startswith("91"):
+                phone = f"+91 {digits[2:7]} {digits[7:]}"
+            elif len(digits) == 10:
+                phone = f"+91 {digits[:5]} {digits[5:]}"
+            else:
+                phone = phone_raw
+
             parts = display_name.split(" ")
             first_name = parts[0]
             last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
@@ -825,7 +851,6 @@ class StaffStatsView(generics.GenericAPIView):
         ).values('appointment__customer').annotate(
             n=Count('appointment__customer')
         ).filter(n__gt=1).count()
-        followers = therapist.favorited_by.count()
         avg_rating_data = Review.objects.filter(
             store=store,
             status='APPROVED'
@@ -845,11 +870,12 @@ class StaffStatsView(generics.GenericAPIView):
             badge = '🌟 Rising Star'
         else:
             badge = '🌱 Newcomer'
+        total_reviews = Review.objects.filter(therapist=therapist).count()
         return Response({
             'total_completed': total_completed,
             'completion_rate': completion_rate,
             'repeat_customers': repeat_customers,
-            'followers': followers,
+            'total_reviews': total_reviews,
             'avg_rating': avg_rating,
             'total_tips': total_tips,
             'performance_badge': badge,
@@ -951,12 +977,24 @@ class StaffLeaveRequestViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         store = getattr(user, 'store', None)
-        if not store and getattr(user, 'outlet', None):
-            store = getattr(user.outlet, 'store', None) or (user.outlet.legacy_stores.first() if hasattr(user.outlet, 'legacy_stores') else None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = getattr(outlet, 'store', None) or (outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None)
+        if not store or not outlet:
+            from apps.core.models import Professional
+            prof = Professional.objects.filter(user_account__user=user).select_related('outlet').first() or \
+                   Professional.objects.filter(email=user.email).select_related('outlet').first() or \
+                   Professional.objects.filter(phone_e164=user.phone).select_related('outlet').first()
+            if prof and prof.outlet:
+                if not outlet:
+                    outlet = prof.outlet
+                if not store:
+                    store = getattr(prof.outlet, 'store', None) or (prof.outlet.legacy_stores.first() if hasattr(prof.outlet, 'legacy_stores') else None)
         if not store:
             from apps.core.models import Store
             store = Store.objects.first()
-        outlet = getattr(user, 'outlet', None) or (store.outlets.first() if store and hasattr(store, 'outlets') else None)
+        if not outlet and store:
+            outlet = getattr(store, 'outlet', None) or (store.outlets.first() if hasattr(store, 'outlets') else None)
         leave = serializer.save(staff=user, store=store, outlet=outlet)
 
         try:
@@ -968,8 +1006,8 @@ class StaffLeaveRequestViewSet(viewsets.ModelViewSet):
                 notify_user(
                     user=mgr,
                     title="🌴 New Leave Request",
-                    body=f"{staff_name} requested leave from {leave.start_date} to {leave.end_date}: {leave.reason[:50]}.",
-                    notification_type="SYSTEM",
+                    message=f"{staff_name} requested leave from {leave.start_date} to {leave.end_date}: {leave.reason[:50]}.",
+                    notif_type="SYSTEM",
                     data={"leave_id": str(leave.id), "staff_id": str(user.id)}
                 )
         except Exception:

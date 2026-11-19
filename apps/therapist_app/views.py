@@ -15,6 +15,7 @@ from apps.core.models import (
     ProfessionalTip, ProfessionalTipStatus,
     ProfessionalReview, ReviewResponse, ReputationConsent,
     AppointmentSlot, AppointmentSlotStatus, CommissionAccrual,
+    resolve_customer_name,
 )
 from .permissions import IsProfessional
 from .serializers import (
@@ -416,10 +417,8 @@ class TherapistCommissionAccrualView(generics.ListAPIView):
             # 30% stylist commission
             comm_paise = int(base_paise * 0.30)
             service_name = slot.store_service.name if slot.store_service else "Salon Service"
-            customer_name = slot.booking.customer.name if (slot.booking and slot.booking.customer) else "Client"
-            if customer_name and customer_name.startswith("91") and "@phone.nearbyme.local" in customer_name:
-                raw_ph = customer_name.replace("@phone.nearbyme.local", "")
-                customer_name = f"+91 {raw_ph[2:7]} {raw_ph[7:]}" if len(raw_ph) == 12 else f"Client ({raw_ph})"
+            cust_obj = slot.booking.customer if slot.booking else None
+            customer_name = resolve_customer_name(cust_obj)
 
             created_at_dt = slot.actual_end_time or slot.slot_start or timezone.now()
             items.append({

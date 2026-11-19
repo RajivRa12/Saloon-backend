@@ -95,6 +95,21 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'email', 'first_name', 'last_name', 'phone', 'loyalty_points', 'expo_push_token']
         read_only_fields = ['id', 'loyalty_points']
+
+    def update(self, instance, validated_data):
+        user = super().update(instance, validated_data)
+        full_name = (user.get_full_name() or user.first_name or '').strip()
+        if full_name:
+            from apps.core.models import GlobalCustomer, normalize_e164
+            gc = None
+            if user.phone:
+                gc = GlobalCustomer.objects.filter(phone_e164=normalize_e164(user.phone)).first()
+            if not gc and user.email:
+                gc = GlobalCustomer.objects.filter(email=user.email).first()
+            if gc:
+                gc.name = full_name
+                gc.save(update_fields=['name'])
+        return user
 class CustomerWalletTransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = WalletTransaction
@@ -224,6 +239,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         return obj.messages.exclude(sender=request.user).filter(is_read=False).count()
 class PublicCouponSerializer(serializers.ModelSerializer):
     store_name = serializers.CharField(source='store.name', read_only=True)
+    city = serializers.SerializerMethodField()
     title = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
 
@@ -231,8 +247,26 @@ class PublicCouponSerializer(serializers.ModelSerializer):
         model = Coupon
         fields = [
             'id', 'code', 'discount_type', 'discount_value', 'maximum_discount',
-            'store_name', 'start_date', 'end_date', 'title', 'description'
+            'store', 'store_name', 'city', 'start_date', 'end_date', 'title', 'description'
         ]
+
+    def get_city(self, obj):
+        if not obj.store:
+            return None
+        if obj.store.outlet and obj.store.outlet.city:
+            return obj.store.outlet.city.name
+        addr = (obj.store.address or "").lower()
+        if 'chennai' in addr:
+            return 'Chennai'
+        if 'bengaluru' in addr or 'bangalore' in addr:
+            return 'Bengaluru'
+        if 'mumbai' in addr:
+            return 'Mumbai'
+        if 'delhi' in addr:
+            return 'Delhi NCR'
+        if 'hyderabad' in addr:
+            return 'Hyderabad'
+        return 'Bengaluru'
 
     def get_title(self, obj):
         val = int(obj.discount_value) if obj.discount_value == int(obj.discount_value) else float(obj.discount_value)
@@ -248,10 +282,45 @@ class PublicCouponSerializer(serializers.ModelSerializer):
                 return f"Get {val}% discount on your booking (max ₹{int(obj.maximum_discount)})."
             return f"Get {val}% discount on your booking."
         return f"Save flat ₹{val} on your salon appointment."
+
 class PublicTherapistSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
+    city = serializers.SerializerMethodField()
+    store_name = serializers.SerializerMethodField()
+    role = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'first_name', 'last_name']
+        fields = ['id', 'first_name', 'last_name', 'name', 'city', 'store_name', 'role']
+
+    def get_name(self, obj):
+        return obj.get_full_name() or obj.first_name or "Specialist"
+
+    def get_city(self, obj):
+        if obj.outlet and obj.outlet.city:
+            return obj.outlet.city.name
+        if obj.store:
+            if obj.store.outlet and obj.store.outlet.city:
+                return obj.store.outlet.city.name
+            addr = (obj.store.address or "").lower()
+            if 'chennai' in addr:
+                return 'Chennai'
+            if 'bengaluru' in addr or 'bangalore' in addr:
+                return 'Bengaluru'
+            if 'mumbai' in addr:
+                return 'Mumbai'
+            if 'delhi' in addr:
+                return 'Delhi NCR'
+            if 'hyderabad' in addr:
+                return 'Hyderabad'
+        return "Bengaluru"
+
+    def get_store_name(self, obj):
+        return getattr(obj.store, 'name', None) or (obj.outlet.name if obj.outlet else "")
+
+    def get_role(self, obj):
+        profile = getattr(obj, 'therapist_profile', None)
+        return getattr(profile, 'specialization', None) or "Top Rated"
 from apps.core.models import StoreService, Professional
 class Phase1StoreServiceSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='canonical_service.category.name', read_only=True, default=None)
@@ -325,6 +394,8 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
     outlet_name = serializers.CharField(source='outlet.name', read_only=True)
     slots = serializers.SerializerMethodField()
     has_review = serializers.SerializerMethodField()
+    review = serializers.SerializerMethodField()
+    professional_id = serializers.SerializerMethodField()
     store_id = serializers.SerializerMethodField()
     payment = serializers.SerializerMethodField()
     amount = serializers.SerializerMethodField()
@@ -335,7 +406,7 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = [
-            'id', 'booking_code', 'outlet', 'outlet_name', 'status', 'booking_start', 'booking_end', 'slots', 'has_review', 'store_id',
+            'id', 'booking_code', 'outlet', 'outlet_name', 'status', 'booking_start', 'booking_end', 'slots', 'has_review', 'review', 'professional_id', 'store_id',
             'is_home_service', 'service_address', 'notes', 'on_the_way_at', 'therapist_lat', 'therapist_lng', 'location_updated_at',
             'payment', 'amount', 'slot_time', 'service_name', 'therapist_name',
         ]
@@ -437,19 +508,27 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
             "balance_due_paise": payment.total_amount_paise - payment.amount_paise,
         }
     def get_has_review(self, obj):
-        from apps.core.models import ProfessionalReview, GlobalCustomer, normalize_e164
-        request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
-            return False
-        user = request.user
-        customer = None
-        if user.phone:
-            customer = GlobalCustomer.objects.filter(phone_e164=normalize_e164(user.phone)).first()
-        if not customer and user.email:
-            customer = GlobalCustomer.objects.filter(email=user.email).first()
-        if not customer:
-            return False
-        return ProfessionalReview.objects.filter(booking=obj, customer=customer).exists()
+        from apps.core.models import ProfessionalReview
+        return ProfessionalReview.objects.filter(booking=obj).exists()
+
+    def get_review(self, obj):
+        from apps.core.models import ProfessionalReview
+        rev = ProfessionalReview.objects.filter(booking=obj).first()
+        if not rev:
+            return None
+        return {
+            "id": str(rev.id),
+            "store_rating": rev.store_rating,
+            "professional_rating": rev.professional_rating or rev.store_rating,
+            "comment": rev.comment or "",
+            "created_at": rev.created_at.isoformat() if rev.created_at else None,
+        }
+
+    def get_professional_id(self, obj):
+        first = obj.slots.filter(professional__isnull=False).first()
+        if first and first.professional_id:
+            return str(first.professional_id)
+        return None
 class BookingTipRequestSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('1.00'))
     professional_id = serializers.UUIDField()

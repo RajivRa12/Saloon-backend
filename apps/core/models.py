@@ -1122,6 +1122,71 @@ def normalize_e164(phone: str) -> str:
         else:
             cleaned = f"+{cleaned}"
     return cleaned
+
+
+def resolve_customer_name(customer, fallback_phone=None) -> str:
+    """
+    Returns a clean personal name or friendly client label ('Client 9999').
+    Guarantees it NEVER returns a raw phone number, +91..., or internal @phone.nearbyme.local email.
+    """
+    raw_name = (getattr(customer, 'name', '') or '').strip() if customer else ''
+    is_invalid_name = (
+        not raw_name or
+        '@' in raw_name or
+        raw_name.startswith('+') or
+        bool(re.match(r'^\d+$', raw_name)) or
+        raw_name in ('Client', 'Guest', 'Guest Client', 'Valued Customer', 'Valued Client', 'None', 'null')
+    )
+
+    if not is_invalid_name:
+        return raw_name
+
+    phone = (getattr(customer, 'phone_e164', None) or fallback_phone or '').strip()
+    email = (getattr(customer, 'email', None) or '').strip()
+
+    # Check if a User exists with a real name
+    user = None
+    if phone:
+        digits = re.sub(r'\D', '', str(phone))
+        user = (
+            User.objects.filter(phone=phone).first() or
+            User.objects.filter(phone=digits).first() or
+            User.objects.filter(phone=f"+{digits}").first()
+        )
+        if not user and len(digits) == 12 and digits.startswith('91'):
+            user = User.objects.filter(phone=digits[2:]).first()
+    if not user and email:
+        user = User.objects.filter(email=email).first()
+
+    if user:
+        user_name = (user.get_full_name() or user.first_name or '').strip()
+        if user_name and '@' not in user_name and not user_name.startswith('+') and not re.match(r'^\d+$', user_name):
+            try:
+                if customer and hasattr(customer, 'save') and customer.name != user_name:
+                    customer.name = user_name
+                    customer.save(update_fields=['name'])
+            except Exception:
+                pass
+            return user_name
+
+    # Check if customer has an Invoice with customer_name
+    if customer:
+        try:
+            from apps.store_erp.models import Invoice
+            inv = Invoice.objects.filter(customer=customer).exclude(customer_name='').first()
+            if inv and inv.customer_name:
+                iname = inv.customer_name.strip()
+                if iname and '@' not in iname and not iname.startswith('+') and not re.match(r'^\d+$', iname):
+                    return iname
+        except Exception:
+            pass
+
+    # Fallback to friendly client label using last 4 phone digits
+    digits = re.sub(r'\D', '', str(phone))
+    if not digits and '@phone.nearbyme.local' in raw_name:
+        digits = re.sub(r'\D', '', raw_name.split('@')[0])
+    last4 = digits[-4:] if len(digits) >= 4 else ''
+    return f"Client {last4}" if last4 else "Valued Client"
 class PhoneOTP(models.Model):
     """Short-lived login code for the phone-is-the-account customer flow —
     no password, no signup form. See customer-app-build-guide.pdf rule 26."""

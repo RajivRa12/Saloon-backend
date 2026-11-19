@@ -285,10 +285,16 @@ class MarketingCampaignSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['store']
 class ERPCouponSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source='store.name', read_only=True)
+    is_global = serializers.SerializerMethodField()
+
     class Meta:
         model = Coupon
         fields = '__all__'
         read_only_fields = ['store', 'used_count']
+
+    def get_is_global(self, obj):
+        return obj.store_id is None
 
     def validate_code(self, value):
         return value.strip().upper()
@@ -425,20 +431,43 @@ class CustomerCRMDataSerializer(serializers.ModelSerializer):
 
     def get_visits(self, obj):
         store = self.context.get('store')
-        from apps.core.models import Appointment, Invoice
+        from apps.core.models import Appointment, Invoice, Booking
+        from django.db import models
         from decimal import Decimal
         items = []
-        appts = Appointment.objects.filter(customer=obj)
-        if store:
-            appts = appts.filter(store=store)
-        for a in appts.select_related('therapist').order_by('-start_time')[:20]:
-            first_item = a.items.first()
-            items.append({
-                'date': a.start_time.isoformat() if a.start_time else (a.created_at.isoformat() if a.created_at else None),
-                'service_name': first_item.service.name if first_item and first_item.service else 'Service',
-                'therapist_name': a.therapist.get_full_name() if a.therapist else '—',
-                'amount': float(a.total_amount or 0),
-            })
+
+        try:
+            q_b = models.Q(customer__email=obj.email)
+            if obj.phone:
+                q_b |= models.Q(customer__phone_e164=obj.phone)
+            bookings = Booking.objects.filter(q_b).prefetch_related('slots__store_service', 'slots__professional').order_by('-booking_start')[:20]
+            for b in bookings:
+                slots = list(b.slots.all())
+                s_name = " + ".join([s.store_service.name for s in slots if s.store_service]) if slots else "Salon Service"
+                prof = slots[0].professional.display_name if slots and slots[0].professional else "—"
+                amt = sum((s.price_paise or 0) for s in slots) / 100.0 if slots else 0.0
+                items.append({
+                    'date': b.booking_start.isoformat() if b.booking_start else b.created_at.isoformat(),
+                    'service_name': s_name,
+                    'therapist_name': prof,
+                    'amount': amt,
+                })
+        except Exception:
+            pass
+
+        if not items:
+            appts = Appointment.objects.filter(customer=obj)
+            if store:
+                appts = appts.filter(store=store)
+            for a in appts.prefetch_related('items__service', 'items__therapist').order_by('-start_time')[:20]:
+                first_item = a.items.first()
+                th_name = first_item.therapist.get_full_name() if first_item and first_item.therapist else '—'
+                items.append({
+                    'date': a.start_time.isoformat() if a.start_time else (a.created_at.isoformat() if a.created_at else None),
+                    'service_name': first_item.service.name if first_item and first_item.service else 'Service',
+                    'therapist_name': th_name,
+                    'amount': float(a.total_amount or 0),
+                })
         if not items:
             invs = Invoice.objects.filter(customer=obj)
             if store:
@@ -587,18 +616,8 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_customer_name(self, obj):
         if not obj.customer:
             return "Walk-in"
-        name = (getattr(obj.customer, 'name', '') or '').strip()
-        if name and '@phone.nearbyme.local' not in name and not name.startswith('+91') and not name.isdigit():
-            return name
-        phone = getattr(obj.customer, 'phone_e164', '') or ''
-        if phone:
-            from apps.core.models import User
-            u = User.objects.filter(phone=phone).first()
-            if u:
-                full = (u.get_full_name() or u.first_name or '').strip()
-                if full and '@' not in full:
-                    return full
-        return name if (name and '@' not in name and not name.startswith('+91') and not name.isdigit()) else "Valued Customer"
+        from apps.core.models import resolve_customer_name
+        return resolve_customer_name(obj.customer)
     def get_booked_by_name(self, obj):
         if obj.booked_by:
             return obj.booked_by.get_full_name() or obj.booked_by.email
@@ -745,12 +764,13 @@ class MeSerializer(serializers.ModelSerializer):
 from apps.core.models import Store
 class StoreProfileSerializer(serializers.ModelSerializer):
     store_code = serializers.SerializerMethodField()
+    outlet_id = serializers.UUIDField(source='outlet.id', read_only=True)
     def get_store_code(self, obj):
         return obj.outlet.invoice_prefix if obj.outlet else None
     class Meta:
         model = Store
         fields = [
-            'id', 'store_code', 'name', 'address', 'location', 'working_hours', 'currency', 'timezone',
+            'id', 'store_code', 'outlet_id', 'name', 'address', 'location', 'working_hours', 'currency', 'timezone',
             'gst_number', 'contact_number', 'email', 'status', 'is_premium_listing',
         ]
         read_only_fields = ['id', 'status', 'is_premium_listing']
