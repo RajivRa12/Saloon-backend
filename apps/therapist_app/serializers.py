@@ -110,6 +110,7 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
     is_home_service = serializers.BooleanField(source='booking.is_home_service', read_only=True)
     service_address = serializers.CharField(source='booking.service_address', read_only=True)
     on_the_way_at = serializers.DateTimeField(source='booking.on_the_way_at', read_only=True)
+    status = serializers.SerializerMethodField()
     class Meta:
         model = AppointmentSlot
         fields = [
@@ -119,6 +120,10 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
             'price_paise', 'status', 'is_home_service', 'service_address', 'on_the_way_at',
         ]
         read_only_fields = fields
+    def get_status(self, obj):
+        if obj.booking and getattr(obj.booking, 'status', None) in ('cancelled', 'CANCELLED'):
+            return 'cancelled'
+        return obj.status
     def get_outlet_name(self, obj):
         return obj.booking.outlet.name
     def get_customer_name(self, obj):
@@ -144,6 +149,14 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
                 names = [s.store_service.name for s in sibling_slots if s.store_service]
                 if names:
                     return " + ".join(names)
+            notes = getattr(obj.booking, 'notes', '') or ''
+            if 'Services:' in notes:
+                try:
+                    part = notes.split('Services:')[1].split('(Home Visit)')[0].strip()
+                    if part:
+                        return part
+                except Exception:
+                    pass
         return obj.store_service.name if obj.store_service else "Salon Service"
 
     def get_items(self, obj):
@@ -158,6 +171,40 @@ class AppointmentSlotScheduleSerializer(serializers.ModelSerializer):
                     }
                     for s in sibling_slots
                 ]
+            try:
+                from apps.core.models import InvoiceLine
+                lines = InvoiceLine.objects.filter(invoice__booking=obj.booking).select_related('store_service')
+                if lines.count() > 1:
+                    return [
+                        {
+                            "id": str(line.id),
+                            "service_name": line.store_service.name if line.store_service else "Salon Service",
+                            "price": (line.total_paise or 0) / 100,
+                        }
+                        for line in lines
+                    ]
+            except Exception:
+                pass
+            notes = getattr(obj.booking, 'notes', '') or ''
+            if 'Services:' in notes:
+                try:
+                    import re
+                    part = notes.split('Services:')[1].split('(Home Visit)')[0].strip()
+                    if part and ('+' in part or ',' in part):
+                        sub_names = [s.strip() for s in re.split(r'[\+,]', part) if s.strip()]
+                        if len(sub_names) > 1:
+                            tot_price = (obj.price_paise or 0) / 100
+                            sub_price = round(tot_price / len(sub_names), 2)
+                            return [
+                                {
+                                    "id": f"{obj.id}-{idx}",
+                                    "service_name": nm,
+                                    "price": sub_price,
+                                }
+                                for idx, nm in enumerate(sub_names)
+                            ]
+                except Exception:
+                    pass
         single_price = (obj.price_paise or 0) / 100
         name = obj.store_service.name if obj.store_service else "Salon Service"
         return [

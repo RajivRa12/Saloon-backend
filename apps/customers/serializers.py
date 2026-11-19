@@ -29,6 +29,7 @@ class MicrositeSerializer(serializers.ModelSerializer):
         return bool(obj.store.is_premium_listing) and obj.store.has_plan_feature('includes_premium_listing')
 class PublicStoreSerializer(serializers.ModelSerializer):
     brand_name = serializers.CharField(source='brand.name', read_only=True)
+    business_type = serializers.CharField(source='business.business_type', read_only=True, default='SALON')
     has_online_booking = serializers.SerializerMethodField()
     is_premium_listing = serializers.SerializerMethodField()
     slug = serializers.SerializerMethodField()
@@ -38,7 +39,7 @@ class PublicStoreSerializer(serializers.ModelSerializer):
     zone = serializers.SerializerMethodField()
     class Meta:
         model = Store
-        fields = ['id', 'name', 'brand_name', 'address', 'location', 'contact_number', 'email', 'has_online_booking', 'working_hours', 'is_premium_listing', 'slug', 'avg_rating', 'review_count', 'city', 'zone']
+        fields = ['id', 'name', 'brand_name', 'business_type', 'address', 'location', 'contact_number', 'email', 'has_online_booking', 'working_hours', 'is_premium_listing', 'slug', 'avg_rating', 'review_count', 'city', 'zone']
     def get_city(self, obj):
         if obj.outlet and obj.outlet.city:
             return obj.outlet.city.name
@@ -205,7 +206,17 @@ class ConversationSerializer(serializers.ModelSerializer):
         fields = ['id', 'therapist', 'therapist_name', 'last_message', 'unread_count', 'created_at']
     def get_last_message(self, obj):
         m = obj.messages.order_by('-created_at').first()
-        return {'content': m.content, 'created_at': m.created_at} if m else None
+        if not m:
+            return None
+        request = self.context.get('request')
+        is_mine = bool(request and m.sender_id == request.user.id)
+        return {
+            'id': m.id,
+            'content': m.content,
+            'created_at': m.created_at.isoformat() if m.created_at else None,
+            'is_mine': is_mine,
+            'sender_id': m.sender_id,
+        }
     def get_unread_count(self, obj):
         request = self.context.get('request')
         if not request:
@@ -213,9 +224,30 @@ class ConversationSerializer(serializers.ModelSerializer):
         return obj.messages.exclude(sender=request.user).filter(is_read=False).count()
 class PublicCouponSerializer(serializers.ModelSerializer):
     store_name = serializers.CharField(source='store.name', read_only=True)
+    title = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+
     class Meta:
         model = Coupon
-        fields = ['id', 'code', 'discount_type', 'discount_value', 'store_name', 'start_date', 'end_date']
+        fields = [
+            'id', 'code', 'discount_type', 'discount_value', 'maximum_discount',
+            'store_name', 'start_date', 'end_date', 'title', 'description'
+        ]
+
+    def get_title(self, obj):
+        val = int(obj.discount_value) if obj.discount_value == int(obj.discount_value) else float(obj.discount_value)
+        if obj.discount_type == 'PERCENTAGE':
+            cap_str = f" up to ₹{int(obj.maximum_discount)}" if obj.maximum_discount else ""
+            return f"{val}% OFF{cap_str}"
+        return f"Flat ₹{val} OFF"
+
+    def get_description(self, obj):
+        val = int(obj.discount_value) if obj.discount_value == int(obj.discount_value) else float(obj.discount_value)
+        if obj.discount_type == 'PERCENTAGE':
+            if obj.maximum_discount:
+                return f"Get {val}% discount on your booking (max ₹{int(obj.maximum_discount)})."
+            return f"Get {val}% discount on your booking."
+        return f"Save flat ₹{val} on your salon appointment."
 class PublicTherapistSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -304,7 +336,7 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
         model = Booking
         fields = [
             'id', 'booking_code', 'outlet', 'outlet_name', 'status', 'booking_start', 'booking_end', 'slots', 'has_review', 'store_id',
-            'is_home_service', 'service_address', 'on_the_way_at', 'therapist_lat', 'therapist_lng', 'location_updated_at',
+            'is_home_service', 'service_address', 'notes', 'on_the_way_at', 'therapist_lat', 'therapist_lng', 'location_updated_at',
             'payment', 'amount', 'slot_time', 'service_name', 'therapist_name',
         ]
         read_only_fields = fields
@@ -341,6 +373,16 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
         if not active_slots.exists():
             active_slots = obj.slots.all()
         names = [s.store_service.name for s in active_slots if s.store_service and s.store_service.name]
+        if len(names) > 1:
+            return " + ".join(names)
+        notes = getattr(obj, 'notes', '') or ''
+        if 'Services:' in notes:
+            try:
+                part = notes.split('Services:')[1].split('(Home Visit)')[0].strip()
+                if part:
+                    return part
+            except Exception:
+                pass
         return " + ".join(names) if names else "Salon Service"
 
     def get_therapist_name(self, obj):
@@ -351,6 +393,34 @@ class CustomerBookingSerializer(serializers.ModelSerializer):
     def get_slots(self, obj):
         from apps.core.models import AppointmentSlotStatus
         active_slots = obj.slots.exclude(status=AppointmentSlotStatus.CANCELLED)
+        if active_slots.count() > 1:
+            return CustomerBookingSlotSerializer(active_slots, many=True).data
+        notes = getattr(obj, 'notes', '') or ''
+        if 'Services:' in notes:
+            try:
+                import re
+                part = notes.split('Services:')[1].split('(Home Visit)')[0].strip()
+                if part and ('+' in part or ',' in part):
+                    sub_names = [s.strip() for s in re.split(r'[\+,]', part) if s.strip()]
+                    if len(sub_names) > 1:
+                        tot_paise = sum(s.price_paise for s in active_slots if s.price_paise) or 0
+                        sub_paise = int(round(tot_paise / len(sub_names))) if tot_paise else 0
+                        first_s = active_slots.first()
+                        prof_name = getattr(first_s.professional, 'display_name', None) if first_s and first_s.professional else None
+                        return [
+                            {
+                                "id": f"{first_s.id if first_s else obj.id}-{idx}",
+                                "store_service_name": nm,
+                                "price_paise": sub_paise,
+                                "professional_name": prof_name,
+                                "status": "scheduled",
+                                "slot_start": obj.booking_start.isoformat() if obj.booking_start else None,
+                                "slot_end": obj.booking_end.isoformat() if obj.booking_end else None,
+                            }
+                            for idx, nm in enumerate(sub_names)
+                        ]
+            except Exception:
+                pass
         return CustomerBookingSlotSerializer(active_slots, many=True).data
     def get_store_id(self, obj):
         store = Store.objects.filter(outlet_id=obj.outlet_id).first()

@@ -127,7 +127,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
     tips = TipSerializer(many=True, read_only=True)
     credit_notes = CreditNoteSerializer(many=True, read_only=True)
     customer_details = serializers.SerializerMethodField()
-    global_customer_name = serializers.CharField(source='global_customer.name', read_only=True, default=None)
+    global_customer_name = serializers.SerializerMethodField()
     class Meta:
         model = Invoice
         fields = [
@@ -139,14 +139,40 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'items', 'payments', 'tips', 'credit_notes'
         ]
         read_only_fields = ['invoice_number', 'store', 'finalised_at', 'created_by']
+    def get_global_customer_name(self, obj):
+        if not obj.global_customer:
+            return None
+        raw = (obj.global_customer.name or "").strip()
+        if raw and '@' not in raw and not raw.startswith('+91') and not raw.isdigit():
+            return raw
+        phone = getattr(obj.global_customer, 'phone_e164', '') or ''
+        if phone:
+            from apps.core.models import User
+            u = User.objects.filter(phone=phone).first()
+            if u and (u.get_full_name() or u.first_name):
+                return (u.get_full_name() or u.first_name).strip()
+        return "Valued Customer"
     def get_customer_details(self, obj):
-        if obj.customer:
-            return {
-                "name": obj.customer.get_full_name() or "Guest",
-                "email": obj.customer.email,
-                "phone": obj.customer.phone
-            }
-        return None
+        name = "Walk-in"
+        phone = ""
+        email = ""
+        if obj.global_customer:
+            name = self.get_global_customer_name(obj) or "Valued Customer"
+            phone = obj.global_customer.phone_e164 or ""
+            email = obj.global_customer.email or ""
+        elif obj.customer:
+            c_name = obj.customer.get_full_name()
+            if c_name and c_name.strip() and '@' not in c_name:
+                name = c_name
+            else:
+                name = "Valued Customer"
+            phone = getattr(obj.customer, 'phone', '') or ''
+            email = getattr(obj.customer, 'email', '') or ''
+        return {
+            "name": name,
+            "email": email,
+            "phone": phone
+        }
 class SplitPaymentSerializer(serializers.Serializer):
     method = serializers.CharField()
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
@@ -229,16 +255,30 @@ class ShiftSerializer(serializers.ModelSerializer):
         read_only_fields = ['store']
 class AttendanceSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.get_full_name', read_only=True)
+    staff_email = serializers.CharField(source='staff.email', read_only=True)
+    staff_role = serializers.CharField(source='staff.role', read_only=True)
+    check_in = serializers.DateTimeField(source='clock_in', read_only=True)
+    check_out = serializers.DateTimeField(source='clock_out', read_only=True)
     class Meta:
         model = Attendance
         fields = '__all__'
         read_only_fields = ['store']
 class LeaveRequestSerializer(serializers.ModelSerializer):
-    staff_name = serializers.CharField(source='staff.get_full_name', read_only=True)
+    staff_name = serializers.SerializerMethodField()
+    staff_role = serializers.SerializerMethodField()
     class Meta:
         model = LeaveRequest
         fields = '__all__'
         read_only_fields = ['store']
+
+    def get_staff_name(self, obj):
+        if not obj.staff:
+            return "Staff"
+        name = obj.staff.get_full_name() or obj.staff.first_name
+        return name.strip() if name and name.strip() else (obj.staff.phone or obj.staff.email or "Staff")
+
+    def get_staff_role(self, obj):
+        return getattr(obj.staff, 'role', '') if obj.staff else ''
 class MarketingCampaignSerializer(serializers.ModelSerializer):
     class Meta:
         model = MarketingCampaign
@@ -248,7 +288,10 @@ class ERPCouponSerializer(serializers.ModelSerializer):
     class Meta:
         model = Coupon
         fields = '__all__'
-        read_only_fields = ['store']
+        read_only_fields = ['store', 'used_count']
+
+    def validate_code(self, value):
+        return value.strip().upper()
 class DailyRegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyRegister
@@ -268,11 +311,33 @@ class StaffTargetSerializer(serializers.ModelSerializer):
     def get_staff_name(self, obj):
         return obj.staff.get_full_name() or obj.staff.email
 class PayrollSerializer(serializers.ModelSerializer):
-    staff_name = serializers.CharField(source='staff.get_full_name', read_only=True)
+    staff_name = serializers.SerializerMethodField()
+    staff_role = serializers.SerializerMethodField()
+
     class Meta:
         model = Payroll
         fields = '__all__'
-        read_only_fields = ['store', 'staff', 'total_payout']
+        read_only_fields = ['store', 'total_payout', 'processed_at']
+
+    def get_staff_name(self, obj):
+        if not obj.staff:
+            return "Staff Member"
+        name = obj.staff.get_full_name() or obj.staff.first_name
+        return name.strip() if name and name.strip() else (obj.staff.phone or obj.staff.email or "Staff Member")
+
+    def get_staff_role(self, obj):
+        return getattr(obj.staff, 'role', '') if obj.staff else ''
+
+    def validate(self, attrs):
+        staff = attrs.get('staff')
+        month_year = attrs.get('month_year')
+        if not self.instance and staff and month_year:
+            from apps.core.models import Payroll
+            if Payroll.objects.filter(staff=staff, month_year=month_year).exists():
+                raise serializers.ValidationError(
+                    f"A payroll record for this staff member in {month_year} already exists. Please update the existing record instead."
+                )
+        return attrs
 class ServiceProductSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
     class Meta:
@@ -426,7 +491,8 @@ class ERPStaffSerializer(serializers.ModelSerializer):
         fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'name', 'role', 'password', 'is_active']
         read_only_fields = ['id']
     def get_name(self, obj):
-        return f"{obj.first_name} {obj.last_name}".strip()
+        full = f"{obj.first_name} {obj.last_name}".strip()
+        return full if full else (obj.phone or obj.email or "Staff")
 class StaffTrainingSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.get_full_name', read_only=True)
     class Meta:
@@ -521,17 +587,18 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_customer_name(self, obj):
         if not obj.customer:
             return "Walk-in"
-        name = getattr(obj.customer, 'name', '') or ''
+        name = (getattr(obj.customer, 'name', '') or '').strip()
+        if name and '@phone.nearbyme.local' not in name and not name.startswith('+91') and not name.isdigit():
+            return name
         phone = getattr(obj.customer, 'phone_e164', '') or ''
-        if not name or '@phone.nearbyme.local' in name:
-            raw_p = phone or (name.split('@')[0] if name else "")
-            if len(raw_p) == 12 and raw_p.startswith('91'):
-                ten = raw_p[2:]
-                return f"+91 {ten[:5]} {ten[5:]}"
-            elif len(raw_p) == 10:
-                return f"+91 {raw_p[:5]} {raw_p[5:]}"
-            return raw_p or "Customer"
-        return f"{name} ({phone})" if phone and phone not in name and '@' not in phone else name
+        if phone:
+            from apps.core.models import User
+            u = User.objects.filter(phone=phone).first()
+            if u:
+                full = (u.get_full_name() or u.first_name or '').strip()
+                if full and '@' not in full:
+                    return full
+        return name if (name and '@' not in name and not name.startswith('+91') and not name.isdigit()) else "Valued Customer"
     def get_booked_by_name(self, obj):
         if obj.booked_by:
             return obj.booked_by.get_full_name() or obj.booked_by.email
@@ -592,9 +659,15 @@ class ProfessionalSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['outlet', 'link_status', 'invited_at', 'accepted_at', 'removed_at', 'created_at']
 class ProfessionalCreateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True, default='Password@123')
+
     class Meta:
         model = Professional
-        fields = ['id', 'display_name', 'display_role', 'phone_e164', 'email', 'gender']
+        fields = ['id', 'display_name', 'display_role', 'phone_e164', 'email', 'gender', 'password']
+
+    def validate(self, attrs):
+        attrs.pop('password', None)  # handled manually in view
+        return attrs
 class ResourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resource

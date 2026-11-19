@@ -198,13 +198,8 @@ class TherapistScheduleViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     filterset_fields = ['status']
     ordering = ['slot_start']
     def get_queryset(self):
-        from apps.core.models import BookingStatus
         return AppointmentSlot.objects.filter(
             professional__user_account=self.request.professional_account
-        ).exclude(
-            status=AppointmentSlotStatus.CANCELLED
-        ).exclude(
-            booking__status=BookingStatus.CANCELLED
         ).select_related('booking', 'booking__outlet', 'booking__customer', 'store_service')
     def _sync_booking_status(self, booking):
         from apps.core.models import BookingStatus

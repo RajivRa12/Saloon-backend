@@ -182,7 +182,7 @@ class SlotHoldAdmin(admin.ModelAdmin):
     list_filter = ('status', 'outlet')
     list_editable = ('status',)
     search_fields = ('session_token', 'customer__name', 'customer__phone_e164', 'store_service__name')
-    autocomplete_fields = ('outlet', 'store_service', 'professional', 'resource', 'customer')
+    autocomplete_fields = ('outlet', 'store_service', 'professional', 'customer')
     readonly_fields = ('id', 'created_at')
     ordering = ('-created_at',)
 @admin.register(OnlinePayment)
@@ -193,13 +193,7 @@ class OnlinePaymentAdmin(admin.ModelAdmin):
     autocomplete_fields = ('store_service', 'booking', 'customer')
     readonly_fields = ('id', 'confirmed_at', 'created_at', 'updated_at')
     ordering = ('-created_at',)
-@admin.register(PlatformSubscriptionPlan)
-class PlatformSubscriptionPlanAdmin(admin.ModelAdmin):
-    list_display = ('name', 'monthly_price', 'commission_percent', 'includes_crm', 'includes_analytics', 'includes_ai_assistant', 'includes_premium_listing', 'is_active', 'created_at')
-    list_filter = ('is_active', 'includes_crm', 'includes_analytics', 'includes_ai_assistant', 'includes_premium_listing')
-    list_editable = ('is_active', 'includes_crm', 'includes_analytics', 'includes_ai_assistant', 'includes_premium_listing')
-    search_fields = ('name',)
-    ordering = ('monthly_price',)
+# PlatformSubscriptionPlan, PlatformInvoice, PlatformCommissionLedger removed from admin panel per Issue cleanup
 @admin.register(StoreSubscription)
 class StoreSubscriptionAdmin(admin.ModelAdmin):
     list_display = ('store', 'plan', 'status', 'current_period_end', 'stripe_subscription_id', 'created_at')
@@ -208,24 +202,6 @@ class StoreSubscriptionAdmin(admin.ModelAdmin):
     search_fields = ('store__name', 'stripe_customer_id', 'stripe_subscription_id')
     autocomplete_fields = ('store',)
     ordering = ('-created_at',)
-@admin.register(PlatformInvoice)
-class PlatformInvoiceAdmin(admin.ModelAdmin):
-    list_display = ('store', 'amount', 'status', 'stripe_invoice_id', 'created_at')
-    list_filter = ('status',)
-    search_fields = ('store__name', 'stripe_invoice_id', 'description')
-    autocomplete_fields = ('store',)
-    ordering = ('-created_at',)
-    def has_add_permission(self, request):
-        return False
-@admin.register(PlatformCommissionLedger)
-class PlatformCommissionLedgerAdmin(admin.ModelAdmin):
-    list_display = ('store', 'booking', 'gross_amount_paise', 'commission_percent_applied', 'commission_paise', 'created_at')
-    list_filter = ('commission_percent_applied',)
-    search_fields = ('store__name',)
-    autocomplete_fields = ('store',)
-    ordering = ('-created_at',)
-    def has_add_permission(self, request):
-        return False
 @admin.register(AdCampaign)
 class AdCampaignAdmin(admin.ModelAdmin):
     list_display = ('title', 'store', 'placement', 'status', 'start_date', 'end_date', 'budget_paise', 'created_at')
@@ -241,27 +217,7 @@ class PaymentGatewayRevenueAdmin(admin.ModelAdmin):
     search_fields = ('store__name', 'period_month', 'notes')
     autocomplete_fields = ('store',)
     ordering = ('-created_at',)
-@admin.register(InsurancePartner)
-class InsurancePartnerAdmin(admin.ModelAdmin):
-    list_display = ('name', 'status', 'revenue_share_percent', 'contact_email', 'contract_start', 'contract_end')
-    list_filter = ('status',)
-    list_editable = ('status',)
-    search_fields = ('name', 'contact_email')
-    ordering = ('name',)
-@admin.register(MarketplaceProduct)
-class MarketplaceProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'vendor_name', 'category', 'price_paise', 'is_active', 'created_at')
-    list_filter = ('is_active', 'category')
-    list_editable = ('is_active',)
-    search_fields = ('name', 'vendor_name', 'category')
-    ordering = ('name',)
-@admin.register(TrainingCourse)
-class TrainingCourseAdmin(admin.ModelAdmin):
-    list_display = ('title', 'instructor_name', 'category', 'duration_hours', 'price_paise', 'is_active', 'created_at')
-    list_filter = ('is_active', 'category')
-    list_editable = ('is_active',)
-    search_fields = ('title', 'instructor_name', 'category')
-    ordering = ('title',)
+# InsurancePartner, MarketplaceProduct, TrainingCourse removed from admin panel per Issue cleanup
 @admin.register(PlatformSettings)
 class PlatformSettingsAdmin(admin.ModelAdmin):
     list_display = ('platform_name', 'support_email', 'default_currency', 'gst_percentage', 'maintenance_mode')
@@ -352,15 +308,7 @@ class ServiceAdmin(admin.ModelAdmin):
 class StaffAvailabilityAdmin(admin.ModelAdmin):
     list_display = ('staff', 'day_of_week', 'start_time', 'end_time', 'is_available')
     list_filter = ('day_of_week', 'is_available', 'staff__store')
-@admin.register(Appointment)
-class AppointmentAdmin(admin.ModelAdmin):
-    list_display = ('id', 'store', 'outlet', 'customer', 'start_time', 'status')
-    list_filter = ('status', 'store', 'outlet')
-    search_fields = ('customer__email', 'id')
-    date_hierarchy = 'start_time'
-@admin.register(AppointmentItem)
-class AppointmentItemAdmin(admin.ModelAdmin):
-    list_display = ('appointment', 'service', 'therapist', 'price')
+# Legacy Appointments (Old Archive) and Appointment items removed from admin panel per Issue cleanup
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
     list_display = ('invoice_number', 'store', 'outlet', 'grand_total_paise', 'status', 'finalised_at', 'created_at')
@@ -374,21 +322,16 @@ class PaymentAdmin(admin.ModelAdmin):
     list_filter = ('method',)
 @admin.register(MembershipTier)
 class MembershipTierAdmin(admin.ModelAdmin):
-    list_display = ('name', 'store', 'price', 'discount_percentage', 'duration_days', 'is_active')
-    list_filter = ('store', 'is_active')
+    list_display = ('name', 'tier_type', 'store', 'price', 'discount_percentage', 'duration_days', 'is_active', 'created_at')
+    list_filter = ('tier_type', 'store', 'is_active')
+    search_fields = ('name', 'store__name')
+    ordering = ('-created_at',)
 @admin.register(CustomerMembership)
 class CustomerMembershipAdmin(admin.ModelAdmin):
     list_display = ('customer', 'tier', 'start_date', 'end_date', 'is_active')
     list_filter = ('tier__store', 'is_active')
     search_fields = ('customer__email', 'customer__first_name')
-class PurchaseOrderItemInline(admin.TabularInline):
-    model = PurchaseOrderItem
-    extra = 1
-@admin.register(PurchaseOrder)
-class PurchaseOrderAdmin(admin.ModelAdmin):
-    list_display = ('id', 'vendor', 'store', 'outlet', 'status', 'total_amount', 'order_date')
-    list_filter = ('status', 'store', 'outlet')
-    inlines = [PurchaseOrderItemInline]
+# Purchase orders removed from admin panel per Issue cleanup
 @admin.register(StaffIncentive)
 class StaffIncentiveAdmin(admin.ModelAdmin):
     list_display = ('title', 'staff', 'store', 'outlet', 'amount', 'is_paid_out', 'created_at')
@@ -673,18 +616,7 @@ class OutletAdmin(admin.ModelAdmin):
         OutletAttendanceInline, OutletLeaveRequestInline, OutletPayrollInline,
         OutletIncentiveInline, OutletDailyRegisterInline, OutletCampaignInline
     ]
-@admin.register(ServiceCategoryPhase1)
-class ServiceCategoryPhase1Admin(admin.ModelAdmin):
-    list_display = ('name', 'slug', 'applies_to', 'display_order', 'is_active')
-    list_filter = ('applies_to', 'is_active')
-    search_fields = ('name',)
-    readonly_fields = ('deleted_at',)
-@admin.register(CanonicalService)
-class CanonicalServiceAdmin(admin.ModelAdmin):
-    list_display = ('name', 'category', 'resource_type', 'default_duration_min', 'gender_applicability', 'is_active')
-    list_filter = ('resource_type', 'gender_applicability', 'is_active', 'category')
-    search_fields = ('name', 'skill_tag')
-    readonly_fields = ('deleted_at',)
+# Master Service Categories and Canonical services removed from admin panel per Issue cleanup
 @admin.register(StoreService)
 class StoreServiceAdmin(admin.ModelAdmin):
     list_display = ('name', 'store_group', 'canonical_service', 'default_price_paise', 'deposit_percentage', 'duration_min', 'is_active_in_store', 'marketplace_status', 'submitted_at')
@@ -692,11 +624,7 @@ class StoreServiceAdmin(admin.ModelAdmin):
     list_editable = ('deposit_percentage',)
     search_fields = ('name', 'store_group__name')
     readonly_fields = ('deleted_at',)
-@admin.register(StoreServiceOutletOverride)
-class StoreServiceOutletOverrideAdmin(admin.ModelAdmin):
-    list_display = ('store_service', 'outlet', 'price_paise', 'duration_min', 'is_available')
-    list_filter = ('is_available',)
-    search_fields = ('store_service__name', 'outlet__name')
+# Store service outlet overrides removed from admin panel per Issue cleanup
 class ProfessionalSkillInline(admin.TabularInline):
     model = ProfessionalSkill
     extra = 0
@@ -713,12 +641,7 @@ class ProfessionalAdmin(admin.ModelAdmin):
     search_fields = ('display_name', 'phone_e164', 'email')
     readonly_fields = ('deleted_at',)
     inlines = [ProfessionalSkillInline, ProfessionalShiftInline, ProfessionalTimeOffInline]
-@admin.register(Resource)
-class ResourceAdmin(admin.ModelAdmin):
-    list_display = ('name', 'outlet', 'resource_type', 'capacity', 'is_bookable', 'created_at')
-    list_filter = ('resource_type', 'is_bookable', 'outlet')
-    search_fields = ('name', 'outlet__name')
-    readonly_fields = ('deleted_at',)
+
 class AppointmentSlotInlineForm(forms.ModelForm):
     class Meta:
         model = AppointmentSlot
@@ -918,58 +841,12 @@ class CommissionRuleAdmin(admin.ModelAdmin):
     list_display = ('store_group', 'professional', 'applies_to', 'rate_type', 'rate_value', 'effective_from')
     list_filter = ('applies_to', 'rate_type')
     search_fields = ('store_group__name', 'professional__display_name')
-@admin.register(CommissionAccrual)
-class CommissionAccrualAdmin(admin.ModelAdmin):
-    list_display = ('professional', 'invoice_line', 'base_paise', 'commission_paise', 'created_at')
-    search_fields = ('professional__display_name',)
-    readonly_fields = ('id', 'invoice_line', 'professional', 'base_paise', 'commission_paise', 'created_at')
-    def has_add_permission(self, request):
-        return False
-    def has_change_permission(self, request, obj=None):
-        return False
-    def has_delete_permission(self, request, obj=None):
-        return False
-@admin.register(CreditNote)
-class CreditNoteAdmin(admin.ModelAdmin):
-    list_display = ('invoice', 'amount_paise', 'created_by', 'created_at')
-    search_fields = ('invoice__invoice_number', 'reason')
-@admin.register(MembershipPlan)
-class MembershipPlanAdmin(admin.ModelAdmin):
-    list_display = ('name', 'store_group', 'price_paise', 'value_paise', 'validity_days', 'is_active')
-    list_filter = ('is_active', 'store_group')
-    search_fields = ('name', 'store_group__name')
-    readonly_fields = ('deleted_at',)
-@admin.register(Membership)
-class MembershipAdmin(admin.ModelAdmin):
-    list_display = ('plan_name', 'customer', 'store_group', 'value_paise_remaining', 'valid_until', 'status')
-    list_filter = ('status',)
-    search_fields = ('plan_name', 'customer__name', 'customer__phone_e164')
-@admin.register(PackagePlan)
-class PackagePlanAdmin(admin.ModelAdmin):
-    list_display = ('name', 'store_group', 'price_paise', 'validity_days', 'is_active')
-    list_filter = ('is_active', 'store_group')
-    search_fields = ('name', 'store_group__name')
-    readonly_fields = ('deleted_at',)
+# CommissionAccrual, CreditNote, PackagePlan removed from admin panel per Issue cleanup
 @admin.register(Package)
 class PackageAdmin(admin.ModelAdmin):
     list_display = ('name', 'customer', 'store_group', 'valid_until')
     search_fields = ('name', 'customer__name', 'customer__phone_e164')
-@admin.register(ServiceProduct)
-class ServiceProductAdmin(admin.ModelAdmin):
-    list_display = ('__str__', 'quantity_used')
-    search_fields = ('service__name', 'store_service__name', 'product__name')
-@admin.register(StockMovement)
-class StockMovementAdmin(admin.ModelAdmin):
-    list_display = ('product', 'quantity_deducted', 'invoice', 'created_at')
-    list_filter = ('product',)
-    search_fields = ('product__name', 'invoice__invoice_number')
-    readonly_fields = ('id', 'product', 'invoice', 'quantity_deducted', 'reason', 'created_at')
-    def has_add_permission(self, request):
-        return False
-    def has_change_permission(self, request, obj=None):
-        return False
-    def has_delete_permission(self, request, obj=None):
-        return False
+# ServiceProduct, StockMovement removed from admin panel per Issue cleanup
 class CampaignSendInline(admin.TabularInline):
     model = CampaignSend
     extra = 0
@@ -1007,27 +884,7 @@ class GlobalCustomerAdmin(admin.ModelAdmin):
     search_fields = ('name', 'phone_e164', 'email')
     readonly_fields = ('deleted_at',)
     inlines = [CustomerBookingInline]
-@admin.register(CustomerStoreLink)
-class CustomerStoreLinkAdmin(admin.ModelAdmin):
-    list_display = ('customer', 'store_group', 'visit_count', 'lifetime_spend_paise', 'lifecycle_stage', 'last_visit_at')
-    list_filter = ('lifecycle_stage',)
-    search_fields = ('customer__name', 'customer__phone_e164', 'store_group__name')
-    readonly_fields = ('deleted_at',)
-@admin.register(CustomerConsent)
-class CustomerConsentAdmin(admin.ModelAdmin):
-    list_display = ('customer', 'consent_type', 'granted', 'granted_at', 'revoked_at')
-    list_filter = ('consent_type', 'granted')
-    search_fields = ('customer__name', 'customer__phone_e164')
-@admin.register(CustomerMergeLog)
-class CustomerMergeLogAdmin(admin.ModelAdmin):
-    list_display = ('surviving_customer_id', 'merged_customer_id', 'merged_by', 'created_at', 'reverted_at')
-    search_fields = ('merged_by', 'surviving_customer_id', 'merged_customer_id')
-    def has_add_permission(self, request):
-        return False
-    def has_change_permission(self, request, obj=None):
-        return False
-    def has_delete_permission(self, request, obj=None):
-        return False
+# CustomerStoreLink, CustomerConsent, CustomerMergeLog removed from admin panel per Issue cleanup
 @admin.register(CustomerFavourite)
 class CustomerFavouriteAdmin(admin.ModelAdmin):
     list_display = ('customer', 'store', 'professional_account', 'created_at')
@@ -1060,35 +917,27 @@ def custom_get_app_list(request, app_label=None):
         ],
         '🏬 2. Store Groups & Branch Directory': [
             'Store groups', 'Outlets', 'Kyc documents', 'Store status histories', 'Cities', 'Zones',
-            'Store public profiles', 'City marketplace flags',
+            'Store public profiles', 'City marketplace flags', 'Store services',
         ],
         '💳 3. Platform Access Plans & Codes': [
             'Plans', 'Access codes', 'Access code redemptions'
         ],
-        '💇‍♀️ 4. Master Service Taxonomy & Moderation': [
-            'Master service categories', 'Canonical services',
-            'Store services', 'Store service outlet overrides'
-        ],
-        '🌍 5. Global Customer & Consent Governance': [
-            'Global customers', 'Customer store links', 'Customer consents', 'Customer merge logs', 'Customer favourites'
-        ],
-        '📊 6. Store ERP & Daily Branch Operations': [
-            'Bookings', 'Appointment slots', 'Appointments', 'Appointment items', 'Invoices', 'Payments', 'Purchase orders', 'Purchase order items', 'Staff incentives',
+        '📊 4. Store ERP & Daily Branch Operations': [
+            'Bookings', 'Appointment slots', 'Invoices', 'Payments', 'Staff incentives',
             'Online payments', 'Queue entries', 'Slot holds',
         ],
-        '👥 7. Store Staff & Legacy CRM': [
-            'Users', 'Professionals', 'Resources', 'Staff availability', 'Membership tiers', 'Customer memberships', 'Coupons'
+        '👥 5. Store Staff & CRM': [
+            'Users', 'Professionals', 'Staff availability', 'Membership tiers', 'Customer memberships', 'Coupons',
+            'Global customers', 'Customer favourites',
         ],
-        '📜 8. Universal Audit Trail & Governance': [
+        '📜 6. Universal Audit Trail & Governance': [
             'Audit logs', 'Platform Settings'
         ],
-        '🏢 9. Legacy Entity Registry': [
+        '🏢 7. Legacy Entity Registry': [
             'Businesses', 'Brands', 'Stores', 'Service categories', 'Services'
         ],
-        '💰 10. Revenue & Monetization': [
-            'Platform subscription plans', 'Store subscriptions', 'Platform invoices',
-            'Platform commission ledgers', 'Ad campaigns', 'Payment gateway revenues',
-            'Insurance partners', 'Marketplace products', 'Training courses',
+        '💰 8. Revenue & Monetization': [
+            'Store subscriptions', 'Ad campaigns', 'Payment gateway revenues',
         ],
     }
     new_app_list = []
@@ -1111,16 +960,6 @@ def custom_get_app_list(request, app_label=None):
                 'has_module_perms': True,
                 'models': group_models,
             })
-    assigned_models = [m for sublist in groups.values() for m in sublist]
-    other_models = [m for name, m in all_models.items() if name not in assigned_models]
-    if other_models:
-        new_app_list.append({
-            'name': 'Other (Additional Models)',
-            'app_label': 'other',
-            'app_url': '',
-            'has_module_perms': True,
-            'models': other_models,
-        })
     return new_app_list
 admin.site.get_app_list = custom_get_app_list
 def admin_approve_kyc_docs(modeladmin, request, queryset):

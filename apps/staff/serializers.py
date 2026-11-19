@@ -29,7 +29,17 @@ class TherapistConversationSerializer(serializers.ModelSerializer):
         return obj.customer.get_full_name() or obj.customer.first_name or obj.customer.phone or obj.customer.email or "Client"
     def get_last_message(self, obj):
         m = obj.messages.order_by('-created_at').first()
-        return {'content': m.content, 'created_at': m.created_at} if m else None
+        if not m:
+            return None
+        request = self.context.get('request')
+        is_mine = bool(request and m.sender_id == request.user.id)
+        return {
+            'id': m.id,
+            'content': m.content,
+            'created_at': m.created_at.isoformat() if m.created_at else None,
+            'is_mine': is_mine,
+            'sender_id': m.sender_id,
+        }
     def get_unread_count(self, obj):
         request = self.context.get('request')
         if not request:

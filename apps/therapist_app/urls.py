@@ -21,4 +21,5 @@ urlpatterns = [
     path('reputation-consent/', ReputationConsentView.as_view(), name='therapist-reputation-consent'),
     path('commissions/', TherapistCommissionAccrualView.as_view(), name='therapist-commissions'),
     path('upload-photo/', TherapistPhotoUploadView.as_view(), name='therapist-upload-photo'),
+    path('photo-upload/', TherapistPhotoUploadView.as_view(), name='therapist-photo-upload'),
 ]

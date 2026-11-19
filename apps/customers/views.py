@@ -19,7 +19,7 @@ from apps.core.models import (
     Conversation, ChatMessage, Referral,
     SlotHold, SlotHoldStatus, Professional, Resource, ResourceType,
     AppointmentSlot, AppointmentSlotStatus, StorePublicProfile,
-    OnlinePayment, OnlinePaymentStatus,
+    OnlinePayment, OnlinePaymentStatus, MembershipTier,
 )
 from .serializers import (
     PublicStoreSerializer, PublicServiceCategorySerializer,
@@ -64,6 +64,9 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
         city_param = request.query_params.get('city')
         if city_param:
             queryset = queryset.filter(outlet__city__name__iexact=city_param.strip())
+        cat_param = request.query_params.get('category') or request.query_params.get('business_type')
+        if cat_param and cat_param.upper() != 'ALL':
+            queryset = queryset.filter(business__business_type__iexact=cat_param.strip())
         dark_city_ids = set(
             CityMarketplaceFlag.objects.filter(is_public=False).values_list('city_id', flat=True)
         )
@@ -527,6 +530,35 @@ class CustomerMembershipViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated, IsCustomer]
     def get_queryset(self):
         return CustomerMembership.objects.filter(customer=self.request.user)
+
+class PublicMembershipTierViewSet(viewsets.ReadOnlyModelViewSet):
+    from apps.store_erp.serializers import MembershipTierSerializer
+    serializer_class = MembershipTierSerializer
+    permission_classes = [AllowAny]
+    queryset = MembershipTier.objects.filter(is_active=True).order_by('price')
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def purchase(self, request, pk=None):
+        tier = self.get_object()
+        import datetime
+        end_date = datetime.date.today() + datetime.timedelta(days=tier.duration_days)
+        membership, _ = CustomerMembership.objects.update_or_create(
+            customer=request.user,
+            tier=tier,
+            defaults={
+                'end_date': end_date,
+                'is_active': True,
+                'is_frozen': False,
+            }
+        )
+        return success_response({
+            "id": str(membership.id),
+            "tier_id": tier.id,
+            "tier_name": tier.name,
+            "discount_percentage": float(tier.discount_percentage),
+            "valid_until": str(end_date),
+            "status": "ACTIVE"
+        }, f"Subscribed to {tier.name} successfully!")
 class CustomerAppointmentViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerAppointmentSerializer
     permission_classes = [IsAuthenticated, IsCustomer]
@@ -719,16 +751,34 @@ class CustomerConversationViewSet(viewsets.ModelViewSet):
         ctx = super().get_serializer_context()
         ctx['request'] = self.request
         return ctx
-
     def create(self, request, *args, **kwargs):
         therapist_id = request.data.get('therapist_id')
-        if not therapist_id:
-            return error_response("therapist_id is required.", 400)
-        therapist = User.objects.filter(id=therapist_id, role=Role.THERAPIST).first()
+        therapist = None
+        if therapist_id:
+            try:
+                t_int = int(str(therapist_id).replace('staff-', '').replace('therapist-', '').strip())
+                therapist = User.objects.filter(id=t_int, role=Role.THERAPIST).first()
+            except (ValueError, TypeError):
+                pass
+            if not therapist:
+                therapist = User.objects.filter(role=Role.THERAPIST, is_active=True).first()
+        else:
+            therapist = User.objects.filter(role=Role.THERAPIST, is_active=True).first()
+
         if not therapist:
             return error_response("Therapist not found.", 404)
-        convo, _ = Conversation.objects.get_or_create(customer=request.user, therapist=therapist)
-        return success_response(self.get_serializer(convo).data, "Conversation ready", 201)
+        convo, created = Conversation.objects.get_or_create(customer=request.user, therapist=therapist)
+        initial_msg = (request.data.get('content') or request.data.get('message') or '').strip()
+        if initial_msg:
+            ChatMessage.objects.create(conversation=convo, sender=request.user, content=initial_msg)
+            from apps.core.models import Notification
+            Notification.objects.create(
+                user=convo.therapist,
+                title=f"New message from {request.user.get_full_name() or 'Customer'}",
+                message=initial_msg[:120],
+                type='NEW_MESSAGE',
+            )
+        return success_response(self.get_serializer(convo).data, "Conversation ready", 201 if created else 200)
     @action(detail=True, methods=['get', 'post'])
     def messages(self, request, pk=None):
         convo = self.get_object()
@@ -737,11 +787,27 @@ class CustomerConversationViewSet(viewsets.ModelViewSet):
             if not content:
                 return error_response("content is required.", 400)
             msg = ChatMessage.objects.create(conversation=convo, sender=request.user, content=content)
+            from apps.core.models import Notification
+            Notification.objects.create(
+                user=convo.therapist,
+                title=f"New message from {request.user.get_full_name() or 'Customer'}",
+                message=content[:120],
+                type='NEW_MESSAGE',
+            )
             from apps.core.notifications import notify_user
             notify_user(
-                convo.therapist, f"New message from {request.user.get_full_name() or 'a customer'}",
+                convo.therapist, f"New message from {request.user.get_full_name() or 'Customer'}",
                 content[:120], notif_type='NEW_MESSAGE', data={"conversation_id": str(convo.id)},
             )
+            store = getattr(convo.therapist, 'store', None)
+            if not store and getattr(convo.therapist, 'outlet', None):
+                store = convo.therapist.outlet.legacy_stores.first()
+            if store:
+                for mgr in store.users.filter(role__in=[Role.STORE_MANAGER, Role.STORE_ADMIN]):
+                    notify_user(
+                        mgr, f"Customer {request.user.get_full_name()} to {convo.therapist.get_full_name()}",
+                        content[:120], notif_type='NEW_MESSAGE', data={"conversation_id": str(convo.id)}
+                    )
             return success_response(ChatMessageSerializer(msg, context={'request': request}).data, "Sent", 201)
         convo.messages.exclude(sender=request.user).update(is_read=True)
         msgs = convo.messages.select_related('sender')
@@ -769,9 +835,18 @@ class PublicServiceViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PublicServiceSerializer
     permission_classes = [AllowAny]
 class PublicCouponViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Coupon.objects.filter(is_active=True).order_by('-created_at')
     serializer_class = PublicCouponSerializer
     permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        from django.utils import timezone
+        from django.db.models import Q
+        now = timezone.now()
+        qs = Coupon.objects.filter(is_active=True, end_date__gte=now).order_by('-created_at')
+        store_id = self.request.query_params.get('store_id') or self.request.query_params.get('store')
+        if store_id:
+            qs = qs.filter(Q(store_id=store_id) | Q(store__isnull=True))
+        return qs
 class PublicTherapistViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         from django.db.models import Count
@@ -800,90 +875,67 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
             return GlobalCustomer.objects.filter(email=user.email).first()
         return None
 
-    @staticmethod
-    def _resolve_service_for_item(outlet, item_id=None, item_name=None, default_price_paise=50000):
-        import uuid
-        from apps.core.models import StoreService, Service, CanonicalService
-        svc = None
-        store_group = getattr(outlet, 'store_group', None) if outlet else None
-
-        # 1. By ID
-        if item_id:
-            try:
-                val = uuid.UUID(str(item_id))
-                if store_group:
-                    svc = StoreService.objects.filter(id=val, store_group=store_group).first()
-                if not svc:
-                    svc = StoreService.objects.filter(id=val).first()
-            except (ValueError, TypeError):
-                cleaned = str(item_id).replace('svc-', '').strip()
-                if cleaned.isdigit():
-                    legacy = Service.objects.filter(id=int(cleaned)).first()
-                    if legacy and store_group:
-                        svc = StoreService.objects.filter(store_group=store_group, name__iexact=legacy.name).first()
-
-        # 2. By Name
-        clean_name = str(item_name).strip() if item_name else ""
-        if not svc and clean_name:
-            if store_group:
-                svc = (
-                    StoreService.objects.filter(store_group=store_group, name__iexact=clean_name).first()
-                    or StoreService.objects.filter(store_group=store_group, name__icontains=clean_name).first()
-                )
-            if not svc:
-                svc = StoreService.objects.filter(name__iexact=clean_name).first()
-
-        # 3. Create on the fly if named and not found
-        if not svc and clean_name and store_group:
-            canonical = CanonicalService.objects.filter(name__iexact=clean_name).first() or CanonicalService.objects.first()
-            svc = StoreService.objects.create(
-                store_group=store_group,
-                canonical_service=canonical,
-                name=clean_name,
-                default_price_paise=default_price_paise,
-                is_active_in_store=True,
-            )
-
-        # 4. Fallback to any active service in store group
-        if not svc and store_group:
-            svc = StoreService.objects.filter(store_group=store_group, is_active_in_store=True).first()
-
-        return svc
-
     def create(self, request, *args, **kwargs):
         from datetime import timedelta, datetime
         from django.utils.dateparse import parse_datetime
         from django.db import transaction
         from apps.core.models import (
             GlobalCustomer, Booking, BookingStatus, BookingSource, normalize_e164,
-            Store, StoreService, AppointmentSlot, AppointmentSlotStatus, Professional, Outlet
+            Store, StoreService, AppointmentSlot, AppointmentSlotStatus, Professional, Outlet, StoreGroup, CanonicalService
         )
+        import uuid as _uuid
+
         try:
             user = request.user
-            if user.phone:
-                customer, _ = GlobalCustomer.objects.get_or_create(
-                    phone_e164=normalize_e164(user.phone), defaults={'name': user.get_full_name() or user.email, 'email': user.email}
-                )
+            customer = None
+            if getattr(user, 'phone', None):
+                norm_phone = normalize_e164(user.phone)
+                customer = GlobalCustomer.objects.filter(phone_e164=norm_phone).first()
+                if not customer:
+                    customer = GlobalCustomer.objects.create(
+                        phone_e164=norm_phone,
+                        name=user.get_full_name() or user.username or "Valued Customer",
+                        email=user.email or None,
+                    )
+            elif getattr(user, 'email', None):
+                customer = GlobalCustomer.objects.filter(email=user.email).first()
+                if not customer:
+                    customer = GlobalCustomer.objects.create(
+                        email=user.email,
+                        name=user.get_full_name() or user.username or "Valued Customer",
+                    )
             else:
-                customer, _ = GlobalCustomer.objects.get_or_create(email=user.email, defaults={'name': user.get_full_name() or user.email})
+                customer = GlobalCustomer.objects.create(
+                    name=getattr(user, 'username', None) or "Valued Customer"
+                )
 
+            # Resolve Store
             store_id = request.data.get('store_id')
             store = None
             if store_id:
                 cleaned_id = str(store_id).replace('salon-', '').replace('store-', '').strip()
                 if cleaned_id.isdigit():
                     store = Store.objects.filter(id=int(cleaned_id)).first()
+                if not store:
+                    store = Store.objects.filter(slug=str(store_id)).first() or Store.objects.filter(name__icontains=cleaned_id).first()
+
             if not store:
                 store = Store.objects.filter(status='ACTIVE', outlet__isnull=False).first() or Store.objects.first()
 
             outlet = (store.outlet if store and store.outlet else None) or Outlet.objects.filter(status='active').first() or Outlet.objects.first()
             if not outlet:
-                return Response(
-                    {"error": "No outlet is currently configured for this venue."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                sg, _ = StoreGroup.objects.get_or_create(name="Default Store Group", defaults={"slug": "default-store-group"})
+                outlet, _ = Outlet.objects.get_or_create(name="Default Outlet", store_group=sg, defaults={"slug": "default-outlet", "status": "active"})
 
-            # Resolve service BEFORE creating the booking
+            # Resolve services list from payload
+            services_list = request.data.get('services') or request.data.get('items') or []
+            req_name = str(request.data.get('service_name') or '').strip()
+            if not req_name and isinstance(services_list, list) and len(services_list) > 0:
+                first_it_name = services_list[0].get('name') or services_list[0].get('service_name')
+                if first_it_name:
+                    req_name = str(first_it_name).strip()
+
+            # Resolve primary service safely
             service_id = request.data.get('service_id')
             svc = None
             if service_id:
@@ -891,48 +943,61 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                 if cleaned_svc.isdigit():
                     from apps.core.models import Service
                     legacy_svc = Service.objects.filter(id=int(cleaned_svc)).first()
-                    if legacy_svc and outlet and outlet.store_group:
-                        svc = StoreService.objects.filter(store_group=outlet.store_group, name=legacy_svc.name).first()
-                    if not svc:
-                        svc = StoreService.objects.filter(id=int(cleaned_svc)).first()
+                    if legacy_svc:
+                        if outlet and outlet.store_group:
+                            svc = StoreService.objects.filter(store_group=outlet.store_group, name__iexact=legacy_svc.name).first()
+                        if not svc:
+                            svc = StoreService.objects.filter(name__iexact=legacy_svc.name).first()
+                        if not svc and outlet and outlet.store_group:
+                            canonical = CanonicalService.objects.first()
+                            svc = StoreService.objects.create(
+                                store_group=outlet.store_group,
+                                canonical_service=canonical,
+                                name=legacy_svc.name,
+                                default_price_paise=int(round(float(legacy_svc.price or 500) * 100)),
+                                duration_min=int(legacy_svc.duration_minutes or 45),
+                                is_active_in_store=True,
+                            )
                 else:
                     try:
-                        import uuid
-                        val = uuid.UUID(cleaned_svc)
+                        val = _uuid.UUID(cleaned_svc)
                         svc = StoreService.objects.filter(id=val).first()
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, Exception):
                         pass
 
-            if not svc and request.data.get('service_name') and outlet and outlet.store_group:
-                svc = StoreService.objects.filter(
-                    store_group=outlet.store_group,
-                    name__iexact=str(request.data.get('service_name')).strip()
-                ).first()
+            if not svc and req_name:
+                if outlet and outlet.store_group:
+                    svc = StoreService.objects.filter(store_group=outlet.store_group, name__iexact=req_name).first() or StoreService.objects.filter(store_group=outlet.store_group, name__icontains=req_name).first()
                 if not svc:
-                    svc = StoreService.objects.filter(
-                        store_group=outlet.store_group,
-                        name__icontains=str(request.data.get('service_name')).strip()
-                    ).first()
+                    svc = StoreService.objects.filter(name__iexact=req_name).first() or StoreService.objects.filter(name__icontains=req_name).first()
+
+            if not svc and req_name:
+                canonical = CanonicalService.objects.first()
+                sg = (outlet.store_group if outlet and outlet.store_group else None) or StoreGroup.objects.first()
+                svc = StoreService.objects.create(
+                    store_group=sg,
+                    canonical_service=canonical,
+                    name=req_name,
+                    default_price_paise=int(round(float(request.data.get('amount') or 500) * 100)),
+                    duration_min=int(request.data.get('duration_minutes') or 45),
+                    is_active_in_store=True,
+                )
 
             if not svc and outlet and outlet.store_group:
-                svc = StoreService.objects.filter(store_group=outlet.store_group, is_active_in_store=True).first()
-                if not svc:
-                    svc = StoreService.objects.filter(store_group=outlet.store_group).first()
-
-            if not svc and store:
-                svc = StoreService.objects.filter(store_group=store.group_id, is_active_in_store=True).first() if hasattr(store, 'group_id') else None
+                svc = StoreService.objects.filter(store_group=outlet.store_group, is_active_in_store=True).first() or StoreService.objects.filter(store_group=outlet.store_group).first()
 
             if not svc:
-                svc = StoreService.objects.filter(is_active_in_store=True).first()
+                svc = StoreService.objects.filter(is_active_in_store=True).first() or StoreService.objects.first()
 
-            if not svc and outlet and outlet.store_group:
-                from apps.core.models import CanonicalService
+            if not svc:
                 canonical = CanonicalService.objects.first()
+                sg = outlet.store_group if (outlet and outlet.store_group) else StoreGroup.objects.first()
                 svc = StoreService.objects.create(
-                    store_group=outlet.store_group,
+                    store_group=sg,
                     canonical_service=canonical,
-                    name=request.data.get('service_name') or "Salon Service",
+                    name=req_name or "Salon Service",
                     default_price_paise=int(round(float(request.data.get('amount') or 500) * 100)),
+                    duration_min=int(request.data.get('duration_minutes') or 45),
                     is_active_in_store=True,
                 )
 
@@ -942,21 +1007,41 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # Slot start parsing in IST (Asia/Kolkata)
+            import zoneinfo
+            kolkata_tz = zoneinfo.ZoneInfo('Asia/Kolkata')
             raw_start = request.data.get('slot_start')
-            if not raw_start and request.data.get('slot_date') and request.data.get('slot_time'):
-                t_str = request.data['slot_time']
+            slot_start = None
+            if raw_start:
                 try:
-                    dt = datetime.strptime(f"{request.data['slot_date']} {t_str}", "%Y-%m-%d %I:%M %p")
-                    raw_start = dt.isoformat()
+                    parsed_dt = parse_datetime(str(raw_start))
+                    if parsed_dt:
+                        if timezone.is_naive(parsed_dt):
+                            slot_start = parsed_dt.replace(tzinfo=kolkata_tz)
+                        else:
+                            slot_start = parsed_dt.astimezone(kolkata_tz)
                 except Exception:
-                    raw_start = f"{request.data['slot_date']}T11:30:00"
+                    pass
 
-            slot_start = parse_datetime(str(raw_start)) if raw_start else timezone.now() + timedelta(hours=2)
+            if not slot_start and request.data.get('slot_date') and request.data.get('slot_time'):
+                t_str = str(request.data['slot_time']).strip()
+                date_str = str(request.data['slot_date']).strip()
+                for fmt in ["%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M%p"]:
+                    try:
+                        dt = datetime.strptime(f"{date_str} {t_str}", fmt)
+                        slot_start = dt.replace(tzinfo=kolkata_tz)
+                        break
+                    except Exception:
+                        continue
+                if not slot_start:
+                    try:
+                        dt = datetime.strptime(f"{date_str} 11:30", "%Y-%m-%d %H:%M")
+                        slot_start = dt.replace(tzinfo=kolkata_tz)
+                    except Exception:
+                        pass
+
             if not slot_start:
-                slot_start = timezone.now() + timedelta(hours=2)
-
-            if timezone.is_naive(slot_start):
-                slot_start = timezone.make_aware(slot_start)
+                slot_start = timezone.now().astimezone(kolkata_tz) + timedelta(hours=2)
 
             # QA-05: Prevent booking elapsed/past time slots
             if slot_start < timezone.now() - timedelta(minutes=5):
@@ -978,8 +1063,16 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            duration = int(request.data.get('duration_minutes') or svc.canonical_service.default_duration_min if (svc and hasattr(svc, 'canonical_service') and svc.canonical_service) else 45)
-            slot_end = slot_start + timedelta(minutes=duration)
+            # Pre-calculate total duration across all services so booking_end accommodates all slots
+            services_list = request.data.get('services') or request.data.get('items') or []
+            if isinstance(services_list, list) and len(services_list) > 0:
+                total_duration = sum(int(it.get('duration_minutes') or it.get('duration') or 30) for it in services_list)
+            else:
+                total_duration = int(request.data.get('duration_minutes') or getattr(svc, 'duration_min', 45) or 45)
+
+            total_duration = max(15, total_duration)
+            slot_end = slot_start + timedelta(minutes=total_duration)
+
             req_amt = request.data.get('amount')
             if req_amt is not None and str(req_amt).strip() != '':
                 try:
@@ -989,15 +1082,24 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
             else:
                 price_paise = int(svc.default_price_paise) if svc else 50000
 
+            # Resolve professional safely
             professional_id = request.data.get('professional_id')
             prof = None
             if professional_id:
                 try:
-                    prof = Professional.objects.filter(id=professional_id, outlet=outlet, is_bookable=True).first()
+                    p_uuid = _uuid.UUID(str(professional_id))
+                    prof = Professional.objects.filter(id=p_uuid, outlet=outlet, is_bookable=True).first()
+                    if not prof:
+                        prof = Professional.objects.filter(id=p_uuid).first()
                 except Exception:
                     prof = None
             if not prof:
                 prof = Professional.objects.filter(outlet=outlet, is_bookable=True).first() if outlet else None
+
+            is_home = bool(request.data.get('is_home_service', False))
+            service_addr = str(request.data.get('service_address') or request.data.get('address') or '').strip()
+            if is_home and not service_addr:
+                service_addr = f"Home Service — {customer.name if customer else 'Customer'} Residence"
 
             with transaction.atomic():
                 booking = Booking.objects.create(
@@ -1007,55 +1109,148 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
                     status=BookingStatus.CONFIRMED,
                     booking_start=slot_start,
                     booking_end=slot_end,
-                    is_home_service=bool(request.data.get('is_home_service', False)),
-                    service_address=request.data.get('service_address') or request.data.get('address') or None,
+                    is_home_service=is_home,
+                    service_address=service_addr or None,
                     notes=request.data.get('notes') or None,
                 )
 
-                services_list = request.data.get('services') or request.data.get('items') or []
-                if not isinstance(services_list, list) or len(services_list) == 0:
-                    req_sname = request.data.get('service_name') or "Salon Service"
-                    if "+" in req_sname:
-                        sub_names = [s.strip() for s in req_sname.split("+") if s.strip()]
-                        services_list = [{'id': None, 'name': sn, 'price': (price_paise // len(sub_names)) / 100, 'duration_minutes': 30} for sn in sub_names]
-                    else:
-                        services_list = [{
-                            'id': request.data.get('service_id'),
-                            'name': req_sname,
-                            'price': (price_paise / 100),
-                            'duration_minutes': duration,
-                        }]
+                if isinstance(services_list, list) and len(services_list) > 1:
+                    current_start = slot_start
+                    for item in services_list:
+                        item_id = str(item.get('id') or item.get('service_id') or '').replace('svc-', '').strip()
+                        item_name = str(item.get('name') or item.get('service_name') or '').strip()
+                        item_svc = None
+                        if item_id:
+                            try:
+                                item_svc = StoreService.objects.filter(id=_uuid.UUID(item_id)).first()
+                            except Exception:
+                                pass
+                        if not item_svc and item_name:
+                            if outlet and outlet.store_group:
+                                item_svc = StoreService.objects.filter(store_group=outlet.store_group, name__iexact=item_name).first() or StoreService.objects.filter(store_group=outlet.store_group, name__icontains=item_name).first()
+                            if not item_svc:
+                                item_svc = StoreService.objects.filter(name__iexact=item_name).first() or StoreService.objects.filter(name__icontains=item_name).first()
 
-                current_start = slot_start
-                for item in services_list:
-                    item_id = item.get('id') or item.get('service_id')
-                    item_name = (item.get('name') or item.get('service_name') or '').strip()
-                    item_dur = int(item.get('duration') or item.get('duration_minutes') or 30)
-                    item_end = current_start + timedelta(minutes=item_dur)
-                    item_price = int(round(float(item.get('price') or 0) * 100))
-                    if item_price <= 0:
-                        item_price = price_paise // len(services_list)
+                        item_dur = int(item.get('duration') or item.get('duration_minutes') or 30)
+                        item_price = int(round(float(item.get('price') or 0) * 100))
 
-                    item_svc = self._resolve_service_for_item(
-                        outlet=outlet,
-                        item_id=item_id,
-                        item_name=item_name,
-                        default_price_paise=item_price,
-                    )
+                        if not item_svc and item_name:
+                            canonical = CanonicalService.objects.first()
+                            sg = (outlet.store_group if outlet and outlet.store_group else None) or StoreGroup.objects.first()
+                            item_svc = StoreService.objects.create(
+                                store_group=sg,
+                                canonical_service=canonical,
+                                name=item_name,
+                                default_price_paise=item_price if item_price > 0 else 50000,
+                                duration_min=item_dur,
+                                is_active_in_store=True,
+                            )
 
+                        item_end = current_start + timedelta(minutes=item_dur)
+                        AppointmentSlot.objects.create(
+                            booking=booking,
+                            store_service=item_svc or svc,
+                            professional=prof,
+                            slot_start=current_start,
+                            slot_end=item_end,
+                            price_paise=item_price if item_price > 0 else (price_paise // len(services_list)),
+                            status=AppointmentSlotStatus.SCHEDULED,
+                        )
+                        current_start = item_end
+                    if booking.booking_end < current_start:
+                        booking.booking_end = current_start
+                        booking.save(update_fields=['booking_end'])
+                else:
                     AppointmentSlot.objects.create(
                         booking=booking,
-                        store_service=item_svc or svc,
+                        store_service=svc,
                         professional=prof,
-                        slot_start=current_start,
-                        slot_end=item_end,
-                        price_paise=item_price,
+                        slot_start=slot_start,
+                        slot_end=slot_end,
+                        price_paise=price_paise,
                         status=AppointmentSlotStatus.SCHEDULED,
                     )
-                    current_start = item_end
 
-                booking.booking_end = current_start
-                booking.save(update_fields=['booking_end'])
+                # Auto-create Invoice so bill immediately shows in StoreAdmin and Therapist views
+                try:
+                    from apps.core.models import (
+                        Invoice, InvoiceStatus, InvoiceLine, InvoiceLineType, Payment, PaymentMethod
+                    )
+                    inv_store = store or (outlet.legacy_stores.first() if outlet else None) or Store.objects.first()
+                    if inv_store:
+                        payment_mode_raw = str(request.data.get('payment_method', '')).lower()
+                        is_paid = payment_mode_raw in ['online', 'upi', 'paid']
+                        inv_status = InvoiceStatus.PAID if is_paid else InvoiceStatus.UNPAID
+
+                        req_subtotal = request.data.get('subtotal')
+                        req_discount = request.data.get('discount_amount')
+                        req_total = request.data.get('amount')
+
+                        sub_paise = int(round(float(req_subtotal if req_subtotal is not None else (price_paise / 100)) * 100))
+                        disc_paise = int(round(float(req_discount if req_discount is not None else 0) * 100))
+                        tot_paise = int(round(float(req_total if req_total is not None else (price_paise / 100)) * 100))
+                        if tot_paise <= 0 and sub_paise > 0:
+                            tot_paise = max(0, sub_paise - disc_paise)
+
+                        invoice = Invoice.objects.create(
+                            invoice_number=f"INV-{_uuid.uuid4().hex[:6].upper()}",
+                            store=inv_store,
+                            outlet=outlet,
+                            booking=booking,
+                            global_customer=customer,
+                            customer=user if user.is_authenticated else None,
+                            subtotal_paise=sub_paise,
+                            discount_amount_paise=disc_paise,
+                            grand_total_paise=tot_paise,
+                            status=inv_status,
+                        )
+
+                        if isinstance(services_list, list) and len(services_list) > 1:
+                            for s_item in services_list:
+                                s_id = str(s_item.get('id') or s_item.get('service_id') or '').replace('svc-', '').strip()
+                                s_name = str(s_item.get('name') or s_item.get('service_name') or '').strip()
+                                s_svc = None
+                                if s_id:
+                                    try:
+                                        s_svc = StoreService.objects.filter(id=_uuid.UUID(s_id)).first()
+                                    except Exception:
+                                        pass
+                                if not s_svc and s_name:
+                                    if outlet and outlet.store_group:
+                                        s_svc = StoreService.objects.filter(store_group=outlet.store_group, name__iexact=s_name).first() or StoreService.objects.filter(store_group=outlet.store_group, name__icontains=s_name).first()
+                                    if not s_svc:
+                                        s_svc = StoreService.objects.filter(name__iexact=s_name).first() or StoreService.objects.filter(name__icontains=s_name).first()
+                                s_price = int(round(float(s_item.get('price') or 0) * 100))
+                                line_amt = s_price if s_price > 0 else (sub_paise // len(services_list))
+                                InvoiceLine.objects.create(
+                                    invoice=invoice,
+                                    store_service=s_svc or svc,
+                                    professional=prof,
+                                    quantity=1,
+                                    line_type=InvoiceLineType.SERVICE,
+                                    unit_price_paise=line_amt,
+                                    total_paise=line_amt,
+                                )
+                        else:
+                            InvoiceLine.objects.create(
+                                invoice=invoice,
+                                store_service=svc,
+                                professional=prof,
+                                quantity=1,
+                                line_type=InvoiceLineType.SERVICE,
+                                unit_price_paise=sub_paise,
+                                total_paise=sub_paise,
+                            )
+
+                        if is_paid:
+                            Payment.objects.create(
+                                invoice=invoice,
+                                method=PaymentMethod.UPI,
+                                amount_paise=tot_paise,
+                                transaction_reference=f"PAY-{_uuid.uuid4().hex[:8].upper()}"
+                            )
+                except Exception as inv_err:
+                    logger.warning("Could not auto-create invoice for booking %s: %s", booking.id, inv_err)
 
             booking.refresh_from_db()
             return success_response(CustomerBookingSerializer(booking).data, "Appointment booked successfully.", status_code=201)

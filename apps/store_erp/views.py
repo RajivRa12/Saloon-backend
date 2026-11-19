@@ -78,7 +78,20 @@ class StaffViewSet(viewsets.ModelViewSet):
     serializer_class = ERPStaffSerializer
     permission_classes = [IsAuthenticated, IsStoreStaff]
     def get_queryset(self):
-        return User.objects.filter(store=self.request.user.store, role__in=[Role.RECEPTIONIST, Role.THERAPIST, Role.STORE_ADMIN])
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+        from django.db.models import Q
+        q = Q(role__in=[Role.RECEPTIONIST, Role.THERAPIST, Role.STORE_ADMIN])
+        if store and outlet:
+            q &= (Q(store=store) | Q(outlet=outlet))
+        elif store:
+            q &= Q(store=store)
+        elif outlet:
+            q &= Q(outlet=outlet)
+        return User.objects.filter(q)
     def perform_create(self, serializer):
         from apps.core.models import (
             ProfessionalAccount, Professional, ProfessionalLinkStatus,
@@ -260,7 +273,17 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = InvoiceSerializer
     permission_classes = [IsStoreStaff]
     def get_queryset(self):
-        return Invoice.objects.filter(store=self.request.user.store)
+        user = self.request.user
+        qs = Invoice.objects.all()
+        if getattr(user, 'is_superuser', False) or getattr(user, 'role', '') == Role.MASTER_ADMIN:
+            return qs.order_by('-created_at')
+        if getattr(user, 'store', None) and getattr(user, 'outlet', None):
+            return qs.filter(models.Q(store=user.store) | models.Q(outlet=user.outlet)).order_by('-created_at')
+        if getattr(user, 'store', None):
+            return qs.filter(store=user.store).order_by('-created_at')
+        if getattr(user, 'outlet', None):
+            return qs.filter(outlet=user.outlet).order_by('-created_at')
+        return qs.none()
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
     def retrieve(self, request, *args, **kwargs):
@@ -275,6 +298,20 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return error_response("Invoice is finalised and cannot be modified.", 403)
         response = super().partial_update(request, *args, **kwargs)
         return success_response(response.data, "Invoice updated")
+    @action(detail=True, methods=['post', 'patch'], url_path='status')
+    def update_status(self, request, pk=None):
+        invoice = self.get_object()
+        new_status = request.data.get('status')
+        if not new_status:
+            return error_response("status is required", 400)
+        new_status = str(new_status).upper().strip()
+        from apps.core.models import InvoiceStatus
+        valid = [InvoiceStatus.PAID, InvoiceStatus.REFUNDED, InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]
+        if new_status not in valid:
+            return error_response(f"Invalid status: {new_status}. Allowed: {valid}", 400)
+        Invoice.objects.filter(pk=invoice.pk).update(status=new_status)
+        invoice.refresh_from_db()
+        return success_response(InvoiceSerializer(invoice).data, f"Status updated to {new_status}")
     @action(detail=False, methods=['post'])
     @transaction.atomic
     def generate(self, request):
@@ -638,9 +675,23 @@ class MembershipTierViewSet(viewsets.ModelViewSet):
     serializer_class = MembershipTierSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
     def get_queryset(self):
-        return MembershipTier.objects.filter(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        if not store and getattr(user, 'outlet', None):
+            store = user.outlet.legacy_stores.first()
+        if not store and (user.is_staff or getattr(user, 'role', None) == Role.MASTER_ADMIN):
+            return MembershipTier.objects.all().order_by('-created_at')
+        return MembershipTier.objects.filter(store=store).order_by('-created_at') if store else MembershipTier.objects.none()
+
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        if not store and getattr(user, 'outlet', None):
+            store = user.outlet.legacy_stores.first()
+        if not store:
+            from apps.core.models import Store
+            store = Store.objects.first()
+        serializer.save(store=store)
 from apps.core.models import Vendor, Product, PurchaseOrder, PurchaseOrderItem, POStatus
 from .serializers import VendorSerializer, ProductSerializer, PurchaseOrderSerializer
 class VendorViewSet(viewsets.ModelViewSet):
@@ -789,9 +840,14 @@ class DashboardViewSet(viewsets.ViewSet):
         today_bookings = bookings_qs.filter(booking_start__date=today).exclude(status=BookingStatus.CANCELLED)
         all_active_bookings = bookings_qs.exclude(status=BookingStatus.CANCELLED)
 
+        # Issue #23: Revenue should only show when service is COMPLETED (not on booking)
+        today_completed_bookings = bookings_qs.filter(
+            booking_start__date=today,
+            status=BookingStatus.COMPLETED
+        )
         today_booking_revenue = Decimal(
             sum(
-                (sum((s.price_paise or 0) for s in b.slots.all()) for b in today_bookings),
+                (sum((s.price_paise or 0) for s in b.slots.all()) for b in today_completed_bookings),
                 0
             )
         ) / 100
@@ -819,7 +875,7 @@ class DashboardViewSet(viewsets.ViewSet):
 
         upcoming = []
         # Populate upcoming schedule with real customer bookings
-        for b in all_active_bookings.select_related('customer', 'outlet').prefetch_related('slots__store_service', 'slots__professional').order_by('booking_start')[:15]:
+        for b in all_active_bookings.select_related('customer', 'outlet').prefetch_related('slots__store_service', 'slots__professional').order_by('booking_start')[:25]:
             slots = list(b.slots.all())
             first_slot = slots[0] if slots else None
             if len(slots) > 1:
@@ -829,16 +885,30 @@ class DashboardViewSet(viewsets.ViewSet):
                 svc_name = first_slot.store_service.name if first_slot and first_slot.store_service else "Salon Service"
             prof_name = first_slot.professional.display_name if first_slot and first_slot.professional else "Unassigned"
             total_amt = sum((s.price_paise or 0) for s in slots) / 100.0 if slots else 0.0
-            cust_name = b.customer.name or b.customer.phone_e164 if b.customer else "Customer"
-            if cust_name and '@phone.nearbyme.local' in cust_name:
-                raw_p = cust_name.replace('@phone.nearbyme.local', '')
-                if len(raw_p) == 12 and raw_p.startswith('91'):
-                    ten = raw_p[2:]
-                    cust_name = f"+91 {ten[:5]} {ten[5:]}"
-                elif len(raw_p) == 10:
-                    cust_name = f"+91 {raw_p[:5]} {raw_p[5:]}"
-                else:
-                    cust_name = f"+{raw_p}"
+            
+            # Format customer name or phone cleanly
+            cust_name = ""
+            if b.customer:
+                raw_cname = (b.customer.name or "").strip()
+                if raw_cname and '@' not in raw_cname and not raw_cname.startswith('+91') and not raw_cname.isdigit():
+                    cust_name = raw_cname
+                elif b.customer.phone_e164:
+                    u = User.objects.filter(phone=b.customer.phone_e164).first()
+                    if u:
+                        full = (u.get_full_name() or u.first_name or '').strip()
+                        if full and '@' not in full:
+                            cust_name = full
+                if not cust_name:
+                    phone_val = (b.customer.phone_e164 or (b.customer.name.split('@')[0] if b.customer.name else '')).strip()
+                    digits = ''.join(c for c in phone_val if c.isdigit())
+                    if len(digits) == 12 and digits.startswith('91'):
+                        cust_name = f"+91 {digits[2:7]} {digits[7:]}"
+                    elif len(digits) == 10:
+                        cust_name = f"+91 {digits[:5]} {digits[5:]}"
+                    else:
+                        cust_name = "Customer"
+            else:
+                cust_name = "Walk-in"
             upcoming.append({
                 "id": str(b.id),
                 "start_at": b.booking_start.isoformat() if b.booking_start else timezone.now().isoformat(),
@@ -850,22 +920,41 @@ class DashboardViewSet(viewsets.ViewSet):
             })
 
         if not upcoming:
-            upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:10]
+            upcoming_qs = today_appointments.exclude(status=AppointmentStatus.CANCELLED).select_related('customer').order_by('start_time')[:15]
             for appt in upcoming_qs:
                 first_item = appt.items.select_related('service', 'therapist').first()
+                raw_cname = (appt.customer.name or appt.customer.get_full_name() or "") if appt.customer else "Walk-in"
+                if '@phone.nearbyme.local' in raw_cname or '@' in raw_cname:
+                    digits = ''.join(c for c in raw_cname.split('@')[0] if c.isdigit())
+                    if len(digits) == 12 and digits.startswith('91'):
+                        c_name = f"+91 {digits[2:7]} {digits[7:]}"
+                    elif len(digits) == 10:
+                        c_name = f"+91 {digits[:5]} {digits[5:]}"
+                    else:
+                        c_name = "Customer"
+                else:
+                    c_name = raw_cname or "Customer"
+                
+                items_list = list(appt.items.all())
+                if len(items_list) > 1:
+                    svc_names = [it.service.name for it in items_list if it.service]
+                    svc_title = " + ".join(svc_names) if svc_names else "Salon Service"
+                else:
+                    svc_title = first_item.service.name if first_item and first_item.service else "Salon Service"
+                
+                th_name = f"{first_item.therapist.first_name} {first_item.therapist.last_name}".strip() if first_item and first_item.therapist else "Unassigned"
                 upcoming.append({
                     "id": str(appt.id),
-                    "start_at": appt.start_time.isoformat(),
-                    "customer_name": appt.customer.get_full_name() if appt.customer else "Walk-in",
-                    "service": first_item.service.name if first_item else "—",
-                    "staff": first_item.therapist.get_full_name() if first_item and first_item.therapist else "Any available",
+                    "start_at": appt.start_time.isoformat() if appt.start_time else timezone.now().isoformat(),
+                    "customer_name": c_name,
+                    "service": svc_title,
+                    "staff": th_name,
                     "status": appt.status,
                     "amount": float(sum((i.price for i in appt.items.all()), Decimal('0.00'))),
                 })
 
+        # Accurate appointment count strictly for today's active appointments
         total_appts_display = today_bookings.count() + appointments_count
-        if total_appts_display == 0 and all_active_bookings.exists():
-            total_appts_display = all_active_bookings.count()
 
         data = {
             "today_date": str(today),
@@ -915,20 +1004,109 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     serializer_class = AttendanceSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
     def get_queryset(self):
-        qs = Attendance.objects.filter(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None) or (user.outlet.legacy_stores.first() if getattr(user, 'outlet', None) else None)
+        qs = Attendance.objects.all()
+        if store and getattr(user, 'outlet', None):
+            qs = qs.filter(models.Q(store=store) | models.Q(outlet=user.outlet))
+        elif store:
+            qs = qs.filter(store=store)
+        elif getattr(user, 'outlet', None):
+            qs = qs.filter(outlet=user.outlet)
         date = self.request.query_params.get('date')
         if date:
             qs = qs.filter(date=date)
         return qs.order_by('-date', '-id')
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None) or (user.outlet.legacy_stores.first() if getattr(user, 'outlet', None) else None)
+        outlet = getattr(user, 'outlet', None) or getattr(store, 'outlet', None)
+        serializer.save(store=store, outlet=outlet)
 class LeaveRequestViewSet(viewsets.ModelViewSet):
     serializer_class = LeaveRequestSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
+
     def get_queryset(self):
-        return LeaveRequest.objects.filter(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+
+        from django.db.models import Q
+        q = Q()
+        if store:
+            q |= Q(store=store)
+        if outlet:
+            q |= Q(outlet=outlet)
+        if not q:
+            return LeaveRequest.objects.all().select_related('staff').order_by('-start_date')
+        return LeaveRequest.objects.filter(q).select_related('staff').order_by('-start_date')
+
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+        if not store:
+            from apps.core.models import Store
+            store = Store.objects.first()
+        if not outlet and store:
+            outlet = getattr(store, 'outlet', None)
+        leave = serializer.save(store=store, outlet=outlet)
+        if leave.status == 'APPROVED':
+            self._handle_leave_approved(leave)
+
+    def perform_update(self, serializer):
+        prev_status = self.get_object().status
+        leave = serializer.save()
+        if leave.status == 'APPROVED' and prev_status != 'APPROVED':
+            self._handle_leave_approved(leave)
+        elif leave.status == 'REJECTED' and prev_status != 'REJECTED':
+            self._notify_leave_status(leave, "REJECTED")
+
+    def _handle_leave_approved(self, leave):
+        from apps.core.models import Professional, ProfessionalTimeOff
+        from datetime import datetime, time
+        try:
+            prof = None
+            if leave.outlet:
+                prof = Professional.objects.filter(outlet=leave.outlet, email=leave.staff.email).first() or \
+                       Professional.objects.filter(outlet=leave.outlet, phone_e164=leave.staff.phone).first()
+            if not prof and leave.store and getattr(leave.store, 'outlet', None):
+                prof = Professional.objects.filter(outlet=leave.store.outlet, email=leave.staff.email).first() or \
+                       Professional.objects.filter(outlet=leave.store.outlet, phone_e164=leave.staff.phone).first()
+            if prof:
+                start_dt = datetime.combine(leave.start_date, time.min)
+                end_dt = datetime.combine(leave.end_date, time.max)
+                ProfessionalTimeOff.objects.get_or_create(
+                    professional=prof,
+                    start_at=start_dt,
+                    end_at=end_dt,
+                    defaults={
+                        'reason': leave.reason or 'Approved Leave',
+                        'created_by': f"Store Admin ({self.request.user.get_full_name() or self.request.user.email})"
+                    }
+                )
+        except Exception:
+            pass
+
+        self._notify_leave_status(leave, "APPROVED")
+
+    def _notify_leave_status(self, leave, status):
+        try:
+            from apps.core.notifications import notify_user
+            icon = "✅" if status == "APPROVED" else "❌"
+            notify_user(
+                user=leave.staff,
+                title=f"{icon} Leave Request {status.title()}",
+                body=f"Your leave request from {leave.start_date} to {leave.end_date} has been {status.lower()}.",
+                notification_type="SYSTEM",
+                data={"leave_id": str(leave.id), "status": status}
+            )
+        except Exception:
+            pass
 class MarketingCampaignViewSet(viewsets.ModelViewSet):
     serializer_class = MarketingCampaignSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
@@ -939,10 +1117,29 @@ class MarketingCampaignViewSet(viewsets.ModelViewSet):
 class ERPCouponViewSet(viewsets.ModelViewSet):
     serializer_class = ERPCouponSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
+
     def get_queryset(self):
-        return Coupon.objects.filter(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+
+        from django.db.models import Q
+        if store:
+            return Coupon.objects.filter(Q(store=store) | Q(store__isnull=True)).order_by('-created_at')
+        return Coupon.objects.all().order_by('-created_at')
+
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+        if not store:
+            from apps.core.models import Store
+            store = Store.objects.first()
+        serializer.save(store=store)
 class DailyRegisterViewSet(viewsets.ModelViewSet):
     serializer_class = DailyRegisterSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
@@ -997,22 +1194,87 @@ class StaffTargetViewSet(viewsets.ModelViewSet):
 class PayrollViewSet(viewsets.ModelViewSet):
     serializer_class = PayrollSerializer
     permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
+
     def get_queryset(self):
-        return Payroll.objects.filter(store=self.request.user.store)
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+
+        from django.db.models import Q
+        q = Q()
+        if store:
+            q |= Q(store=store)
+        if outlet:
+            q |= Q(outlet=outlet)
+        if not q:
+            return Payroll.objects.all().select_related('staff').order_by('-processed_at')
+        return Payroll.objects.filter(q).select_related('staff').order_by('-processed_at')
+
     def perform_create(self, serializer):
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        outlet = getattr(user, 'outlet', None)
+        if not store and outlet:
+            store = outlet.legacy_stores.first() if hasattr(outlet, 'legacy_stores') else None
+        if not store:
+            from apps.core.models import Store
+            store = Store.objects.first()
+        if not outlet and store:
+            outlet = getattr(store, 'outlet', None)
+
         base = serializer.validated_data.get('base_salary', 0)
         comm = serializer.validated_data.get('commissions_earned', 0)
         inc = serializer.validated_data.get('incentives', 0)
         ded = serializer.validated_data.get('deductions', 0)
-        total = base + comm + inc - ded
-        serializer.save(store=self.request.user.store, total_payout=total)
+        total = max(0, base + comm + inc - ded)
+
+        payroll = serializer.save(store=store, outlet=outlet, total_payout=total)
+        if payroll.status == 'PAID':
+            self._notify_payroll(payroll)
+
     def perform_update(self, serializer):
         base = serializer.validated_data.get('base_salary', serializer.instance.base_salary)
         comm = serializer.validated_data.get('commissions_earned', serializer.instance.commissions_earned)
         inc = serializer.validated_data.get('incentives', serializer.instance.incentives)
         ded = serializer.validated_data.get('deductions', serializer.instance.deductions)
-        total = base + comm + inc - ded
-        serializer.save(total_payout=total)
+        total = max(0, base + comm + inc - ded)
+
+        prev_status = serializer.instance.status
+        payroll = serializer.save(total_payout=total)
+
+        if payroll.status == 'PAID' and prev_status != 'PAID':
+            self._notify_payroll(payroll)
+
+    @action(detail=True, methods=['post'], url_path='status')
+    def update_status(self, request, pk=None):
+        payroll = self.get_object()
+        new_status = request.data.get('status')
+        if new_status not in ['PENDING', 'PAID']:
+            return Response({'error': 'Invalid status. Choose PENDING or PAID.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        prev_status = payroll.status
+        payroll.status = new_status
+        payroll.save(update_fields=['status'])
+
+        if new_status == 'PAID' and prev_status != 'PAID':
+            self._notify_payroll(payroll)
+
+        return Response(self.get_serializer(payroll).data)
+
+    def _notify_payroll(self, payroll):
+        try:
+            from apps.core.notifications import notify_user
+            notify_user(
+                user=payroll.staff,
+                title="💰 Salary Payout Processed",
+                body=f"Your salary payout of ₹{payroll.total_payout} for {payroll.month_year} has been processed.",
+                notification_type="SYSTEM",
+                data={"payroll_id": str(payroll.id), "month_year": payroll.month_year}
+            )
+        except Exception:
+            pass
 class LeaderboardView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated, IsStoreManagerOrReceptionist]
     def get(self, request):
@@ -1189,37 +1451,107 @@ class CustomerCRMViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerCRMDataSerializer
     permission_classes = [IsAuthenticated, IsStoreStaff, RequiresCRM]
     def get_queryset(self):
-        store = self.request.user.store
-        appointment_customer_ids = Appointment.objects.filter(store=store).values_list('customer_id', flat=True).distinct()
+        user = self.request.user
+        store = getattr(user, 'store', None) or (user.outlet.legacy_stores.first() if getattr(user, 'outlet', None) else None)
+        if not store:
+            return User.objects.filter(role=Role.CUSTOMER).order_by('-date_joined')
+        from apps.core.models import CustomerStoreLink, Booking
+        appointment_customer_ids = Appointment.objects.filter(store=store).values_list('customer_id', flat=True)
+        linked_customer_ids = CustomerStoreLink.objects.filter(store=store).values_list('customer_id', flat=True)
+        booking_emails = []
+        if getattr(user, 'outlet', None):
+            booking_emails = Booking.objects.filter(outlet=user.outlet).values_list('customer__email', flat=True)
         return User.objects.filter(role=Role.CUSTOMER).filter(
-            models.Q(id__in=appointment_customer_ids) | models.Q(store=store)
-        ).distinct()
+            models.Q(store=store) |
+            models.Q(id__in=appointment_customer_ids) |
+            models.Q(id__in=linked_customer_ids) |
+            models.Q(email__in=booking_emails)
+        ).distinct().order_by('-date_joined')
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context['store'] = self.request.user.store
+        context['store'] = getattr(self.request.user, 'store', None) or (self.request.user.outlet.legacy_stores.first() if getattr(self.request.user, 'outlet', None) else None)
         return context
+
     def create(self, request, *args, **kwargs):
-        full_name = request.data.get('name', '')
-        name_parts = full_name.strip().split(' ', 1)
-        first_name = name_parts[0]
+        from apps.core.models import normalize_e164, GlobalCustomer, CustomerProfile, CustomerStoreLink
+        import uuid as _uuid
+
+        full_name = str(request.data.get('full_name') or request.data.get('name') or '').strip()
+        name_parts = full_name.split(' ', 1) if full_name else ['', '']
+        first_name = name_parts[0] or "Guest"
         last_name = name_parts[1] if len(name_parts) > 1 else ''
-        email = request.data.get('email', f"{first_name.lower()}{User.objects.count()}@guest.local")
-        phone = request.data.get('phone', '')
-        if User.objects.filter(email=email, role=Role.CUSTOMER).exists():
-            return Response({"success": False, "message": "Customer with this email already exists"}, status=status.HTTP_400_BAD_REQUEST)
-        user = User.objects.create(
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            phone=phone,
-            role=Role.CUSTOMER,
-            store=request.user.store
-        )
-        user.set_unusable_password()
-        user.save()
-        self.kwargs['pk'] = user.pk
-        instance = self.get_object()
-        serializer = self.get_serializer(instance)
+
+        raw_phone = str(request.data.get('phone') or '').strip()
+        phone_e164 = normalize_e164(raw_phone) if raw_phone else None
+
+        raw_email = str(request.data.get('email') or '').strip().lower()
+
+        # If phone is provided, format phone-based email; otherwise unique guest email
+        if raw_email:
+            email = raw_email
+        elif phone_e164:
+            email = f"{phone_e164.lstrip('+')}@phone.nearbyme.local"
+        else:
+            email = f"guest_{_uuid.uuid4().hex[:8]}@guest.nearbyme.local"
+
+        store = getattr(request.user, 'store', None) or (request.user.outlet.legacy_stores.first() if getattr(request.user, 'outlet', None) else None) or Store.objects.first()
+        brand = getattr(store, 'brand', None) or getattr(request.user, 'brand', None)
+
+        # Check existing user by phone or email
+        user = None
+        if phone_e164:
+            user = User.objects.filter(phone=phone_e164, role=Role.CUSTOMER).first()
+        if not user and email:
+            user = User.objects.filter(email=email, role=Role.CUSTOMER).first()
+
+        if user:
+            # Update customer details if missing
+            if full_name:
+                user.first_name = first_name
+                user.last_name = last_name
+            if phone_e164 and not user.phone:
+                user.phone = phone_e164
+            if store and not user.store:
+                user.store = store
+            if brand and not user.brand:
+                user.brand = brand
+            user.save()
+        else:
+            user = User.objects.create(
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                phone=phone_e164 or raw_phone,
+                username=phone_e164 or email,
+                role=Role.CUSTOMER,
+                store=store,
+                brand=brand,
+            )
+            user.set_unusable_password()
+            user.save()
+
+        # Ensure CustomerProfile exists
+        CustomerProfile.objects.get_or_create(user=user)
+
+        # Ensure GlobalCustomer exists for marketplace & booking engine
+        if phone_e164:
+            GlobalCustomer.objects.get_or_create(
+                phone_e164=phone_e164,
+                defaults={'name': full_name or user.email, 'email': email}
+            )
+        elif email:
+            GlobalCustomer.objects.get_or_create(
+                email=email,
+                defaults={'name': full_name or user.email}
+            )
+
+        # Link customer to store
+        if store:
+            CustomerStoreLink.objects.get_or_create(store=store, customer=user)
+
+        context = self.get_serializer_context()
+        serializer = self.get_serializer(user, context=context)
         return success_response(serializer.data, "Customer created successfully", 201)
     def update(self, request, *args, **kwargs):
         user = self.get_object()
@@ -1621,6 +1953,7 @@ class BookingViewSet(viewsets.ModelViewSet):
 from apps.core.models import (
     Professional, ProfessionalSkill, ProfessionalShift, ProfessionalTimeOff,
     ProfessionalLinkStatus, Resource, CanonicalService,
+    ProfessionalAccount, User, Role,
 )
 from .serializers import (
     ProfessionalSerializer, ProfessionalCreateSerializer, ProfessionalShiftSerializer,
@@ -1636,11 +1969,53 @@ class ProfessionalViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         outlet = request.user.outlet
+        store = request.user.store
+        brand = request.user.brand
+
+        email = request.data.get('email', '').strip().lower()
+        password = request.data.get('password', 'Password@123') or 'Password@123'
+
+        # Auto-create or fetch the linked User account for this professional
+        user_account = None
+        if email:
+            user_obj, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    'username': email,
+                    'first_name': (request.data.get('display_name') or '').split()[0] if request.data.get('display_name') else '',
+                    'last_name': ' '.join((request.data.get('display_name') or '').split()[1:]),
+                    'role': Role.THERAPIST,
+                    'store': store,
+                    'brand': brand,
+                    'outlet': outlet,
+                    'phone': request.data.get('phone_e164', ''),
+                    'is_active': True,
+                }
+            )
+            user_obj.set_password(password)
+            if not created:
+                user_obj.store = store
+                user_obj.brand = brand
+                user_obj.outlet = outlet
+            user_obj.save()
+
+            acc, _ = ProfessionalAccount.objects.get_or_create(
+                user=user_obj,
+                defaults={
+                    'name': request.data.get('display_name') or email,
+                    'phone_e164': request.data.get('phone_e164', ''),
+                }
+            )
+            user_account = acc
+
         professional = serializer.save(
             outlet=outlet, store_group=outlet.store_group,
-            link_status=ProfessionalLinkStatus.INVITED, invited_at=timezone.now(),
+            link_status=ProfessionalLinkStatus.ACCEPTED,
+            invited_at=timezone.now(),
+            accepted_at=timezone.now(),
+            **({"user_account": user_account} if user_account else {}),
         )
-        return success_response(ProfessionalSerializer(professional).data, "Professional invited", 201)
+        return success_response(ProfessionalSerializer(professional).data, "Professional created", 201)
     @action(detail=False, methods=['get'], url_path='skill-tags')
     def skill_tags(self, request):
         tags = CanonicalService.objects.exclude(skill_tag__isnull=True).exclude(skill_tag='').values_list('skill_tag', flat=True).distinct().order_by('skill_tag')
@@ -2162,7 +2537,19 @@ class StoreConversationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = StoreConversationSerializer
     permission_classes = [IsStoreManagerOrReceptionist]
     def get_queryset(self):
-        return Conversation.objects.filter(therapist__store=self.request.user.store).select_related('customer', 'therapist')
+        user = self.request.user
+        store = getattr(user, 'store', None)
+        if not store and getattr(user, 'outlet', None):
+            store = user.outlet.legacy_stores.first()
+        if not store and (user.is_staff or getattr(user, 'role', None) == Role.MASTER_ADMIN):
+            return Conversation.objects.all().select_related('customer', 'therapist').order_by('-created_at')
+        if not store:
+            return Conversation.objects.none()
+        from django.db.models import Q
+        return Conversation.objects.filter(
+            Q(therapist__store=store) | Q(therapist__outlet=getattr(user, 'outlet', None))
+        ).select_related('customer', 'therapist').order_by('-created_at')
+
     @action(detail=True, methods=['get', 'post'])
     def messages(self, request, pk=None):
         convo = self.get_object()
@@ -2172,8 +2559,14 @@ class StoreConversationViewSet(viewsets.ReadOnlyModelViewSet):
                 return error_response("content is required.", 400)
             msg = ChatMessage.objects.create(conversation=convo, sender=request.user, content=content)
             from apps.core.notifications import notify_user
+            # Notify customer
             notify_user(
-                convo.customer, f"New message from {request.user.get_full_name() or 'the store'}",
+                convo.customer, f"New message from Store Manager",
+                content[:120], notif_type='NEW_MESSAGE', data={"conversation_id": str(convo.id)},
+            )
+            # Notify therapist
+            notify_user(
+                convo.therapist, f"Store Manager message regarding {convo.customer.get_full_name() or 'Customer'}",
                 content[:120], notif_type='NEW_MESSAGE', data={"conversation_id": str(convo.id)},
             )
             return success_response(StoreChatMessageSerializer(msg, context={'request': request}).data, "Sent", 201)

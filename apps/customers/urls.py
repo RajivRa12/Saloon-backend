@@ -12,7 +12,7 @@ from .views import (
     CustomerBookingViewSet,
     CustomerNotificationViewSet, CustomerReviewViewSet,
     CustomerConversationViewSet, ReferralView, LoyaltyRedeemView,
-    MicrositeView,
+    MicrositeView, PublicMembershipTierViewSet,
 )
 router = DefaultRouter()
 router.register(r'stores', PublicStoreViewSet, basename='public-store')
@@ -20,6 +20,7 @@ router.register(r'trending-services', PublicServiceViewSet, basename='public-tre
 router.register(r'offers', PublicCouponViewSet, basename='public-offers')
 router.register(r'recommended-therapists', PublicTherapistViewSet, basename='public-recommended-therapists')
 router.register(r'memberships', CustomerMembershipViewSet, basename='customer-membership')
+router.register(r'membership-tiers', PublicMembershipTierViewSet, basename='public-membership-tiers')
 router.register(r'appointments', CustomerAppointmentViewSet, basename='customer-appointment')
 router.register(r'giftcards', GiftCardViewSet, basename='customer-giftcard')
 router.register(r'packages', CustomerPackageViewSet, basename='customer-package')
