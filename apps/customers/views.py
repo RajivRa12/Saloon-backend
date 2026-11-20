@@ -900,12 +900,14 @@ class PublicCouponViewSet(viewsets.ReadOnlyModelViewSet):
         if city_param and city_param not in ['all', 'all cities']:
             if 'chennai' in city_param:
                 qs = qs.filter(
+                    Q(store__isnull=True) |
                     Q(store__outlet__city__name__iexact='Chennai') |
                     Q(store__address__icontains='Chennai') |
                     Q(store__outlet__address_line__icontains='Chennai')
                 )
             elif 'bengaluru' in city_param or 'bangalore' in city_param:
                 qs = qs.filter(
+                    Q(store__isnull=True) |
                     Q(store__outlet__city__name__iexact='Bengaluru') |
                     Q(store__address__icontains='Bengaluru') |
                     Q(store__address__icontains='Bangalore') |
@@ -914,24 +916,28 @@ class PublicCouponViewSet(viewsets.ReadOnlyModelViewSet):
                 )
             elif 'mumbai' in city_param:
                 qs = qs.filter(
+                    Q(store__isnull=True) |
                     Q(store__outlet__city__name__iexact='Mumbai') |
                     Q(store__address__icontains='Mumbai') |
                     Q(store__outlet__address_line__icontains='Mumbai')
                 )
             elif 'delhi' in city_param:
                 qs = qs.filter(
+                    Q(store__isnull=True) |
                     Q(store__outlet__city__name__iexact='Delhi') |
                     Q(store__address__icontains='Delhi') |
                     Q(store__outlet__address_line__icontains='Delhi')
                 )
             elif 'hyderabad' in city_param:
                 qs = qs.filter(
+                    Q(store__isnull=True) |
                     Q(store__outlet__city__name__iexact='Hyderabad') |
                     Q(store__address__icontains='Hyderabad') |
                     Q(store__outlet__address_line__icontains='Hyderabad')
                 )
             else:
                 qs = qs.filter(
+                    Q(store__isnull=True) |
                     Q(store__outlet__city__name__iexact=city_param) |
                     Q(store__address__icontains=city_param) |
                     Q(store__outlet__address_line__icontains=city_param)
