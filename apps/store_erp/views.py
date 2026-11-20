@@ -2749,13 +2749,74 @@ class QueueViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         outlet = self._resolve_outlet()
-        serializer.save(outlet=outlet)
+        entry = serializer.save(outlet=outlet)
+        # Notify the customer (if they have an account) that they're in the queue
+        try:
+            from apps.core.notifications import notify_user
+            from apps.core.models import User
+            guest_phone = entry.guest_phone
+            customer_user = None
+            if entry.customer and entry.customer.phone_e164:
+                customer_user = User.objects.filter(
+                    phone_e164=entry.customer.phone_e164,
+                    role='CUSTOMER'
+                ).first()
+            elif guest_phone:
+                from apps.core.models import normalize_e164
+                normalized = normalize_e164(guest_phone)
+                customer_user = User.objects.filter(
+                    phone_e164=normalized,
+                    role='CUSTOMER'
+                ).first()
+            if customer_user:
+                service_name = entry.store_service.name if entry.store_service else "your service"
+                outlet_name = outlet.name if outlet else "our salon"
+                notify_user(
+                    customer_user,
+                    title="You're in the queue! 🎉",
+                    message=f"You've been checked in for {service_name} at {outlet_name}. We'll notify you when it's your turn.",
+                    notif_type='QUEUE',
+                    data={'queue_entry_id': str(entry.id), 'type': 'queue_checkin'},
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Could not notify customer of queue check-in: %s", e)
 
     def _transition(self, request, pk, new_status, timestamp_field):
         entry = self.get_object()
         entry.status = new_status
         setattr(entry, timestamp_field, timezone.now())
         entry.save(update_fields=['status', timestamp_field])
+        # Notify customer when they are called
+        try:
+            if new_status == QueueEntryStatus.CALLED:
+                from apps.core.notifications import notify_user
+                from apps.core.models import User
+                customer_user = None
+                if entry.customer and entry.customer.phone_e164:
+                    customer_user = User.objects.filter(
+                        phone_e164=entry.customer.phone_e164,
+                        role='CUSTOMER'
+                    ).first()
+                elif entry.guest_phone:
+                    from apps.core.models import normalize_e164
+                    normalized = normalize_e164(entry.guest_phone)
+                    customer_user = User.objects.filter(
+                        phone_e164=normalized,
+                        role='CUSTOMER'
+                    ).first()
+                if customer_user:
+                    outlet_name = entry.outlet.name if entry.outlet else "our salon"
+                    notify_user(
+                        customer_user,
+                        title="It's your turn! 💈",
+                        message=f"You've been called at {outlet_name}. Please come to the counter now.",
+                        notif_type='QUEUE',
+                        data={'queue_entry_id': str(entry.id), 'type': 'queue_called'},
+                    )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Could not notify customer of queue call: %s", e)
         return success_response(QueueEntrySerializer(entry).data, f"Marked {new_status}")
 
     @action(detail=True, methods=['post'])
