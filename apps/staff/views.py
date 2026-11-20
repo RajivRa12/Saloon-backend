@@ -307,8 +307,14 @@ class TherapistDashboardViewSet(viewsets.ViewSet):
         is_checked_in = bool(today_att and today_att.clock_in and not today_att.clock_out)
         profile, _ = TherapistProfile.objects.get_or_create(user=therapist)
         from apps.core.models import Review
-        reviews_cnt = Review.objects.filter(therapist=therapist).count()
-        rev_avg = Review.objects.filter(therapist=therapist).aggregate(avg=Avg('rating'))['avg']
+        from django.db.models import Q
+        rev_q = Q(therapist=therapist)
+        if therapist.store:
+            rev_q |= (Q(therapist__isnull=True) & Q(store=therapist.store))
+        if therapist.outlet:
+            rev_q |= (Q(therapist__isnull=True) & Q(store__outlet=therapist.outlet))
+        reviews_cnt = Review.objects.filter(rev_q).distinct().count()
+        rev_avg = Review.objects.filter(rev_q).distinct().aggregate(avg=Avg('rating'))['avg']
         avg_rating_str = f"{round(float(rev_avg), 1)} ★" if rev_avg else "4.9 ★"
 
         data = {
@@ -870,7 +876,12 @@ class StaffStatsView(generics.GenericAPIView):
             badge = '🌟 Rising Star'
         else:
             badge = '🌱 Newcomer'
-        total_reviews = Review.objects.filter(therapist=therapist).count()
+        total_rev_q = Q(therapist=therapist)
+        if therapist.store:
+            total_rev_q |= (Q(therapist__isnull=True) & Q(store=therapist.store))
+        if therapist.outlet:
+            total_rev_q |= (Q(therapist__isnull=True) & Q(store__outlet=therapist.outlet))
+        total_reviews = Review.objects.filter(total_rev_q).distinct().count()
         return Response({
             'total_completed': total_completed,
             'completion_rate': completion_rate,
@@ -937,7 +948,14 @@ class TherapistReviewViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'rating']
     ordering = ['-created_at']
     def get_queryset(self):
-        return Review.objects.filter(therapist=self.request.user)
+        user = self.request.user
+        from django.db.models import Q
+        q = Q(therapist=user)
+        if user.store:
+            q |= (Q(therapist__isnull=True) & Q(store=user.store))
+        if user.outlet:
+            q |= (Q(therapist__isnull=True) & Q(store__outlet=user.outlet))
+        return Review.objects.filter(q).distinct().order_by('-created_at')
     @action(detail=True, methods=['post', 'patch'])
     def reply(self, request, pk=None):
         review = self.get_object()

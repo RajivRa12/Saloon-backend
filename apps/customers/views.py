@@ -1713,28 +1713,66 @@ class CustomerBookingViewSet(viewsets.ModelViewSet):
 
         # Also sync to legacy/staff Review model so the review immediately appears in TherapistWeb & StoreAdmin
         try:
-            from apps.core.models import Review, Store
+            from apps.core.models import Review, Store, User
+            from django.db.models import Q
             th_user = None
             if slot and slot.professional:
                 if slot.professional.user_account and slot.professional.user_account.user:
                     th_user = slot.professional.user_account.user
                 elif hasattr(slot.professional, 'user') and slot.professional.user:
                     th_user = slot.professional.user
+                elif slot.professional.phone_e164:
+                    th_user = User.objects.filter(phone=slot.professional.phone_e164).first()
+                elif slot.professional.email:
+                    th_user = User.objects.filter(email__iexact=slot.professional.email).first()
+
+            if not th_user:
+                th_name = data.get('therapist_name') or request.data.get('therapist_name')
+                if not th_name and booking.notes and 'Stylist:' in booking.notes:
+                    try:
+                        th_name = booking.notes.split('Stylist:')[1].split('\n')[0].strip()
+                    except Exception:
+                        pass
+                if th_name:
+                    first_part = th_name.split()[0] if th_name else ""
+                    th_user = User.objects.filter(
+                        Q(first_name__iexact=th_name) |
+                        Q(username__iexact=th_name) |
+                        Q(first_name__icontains=first_part)
+                    ).filter(role__in=['THERAPIST', 'STAFF', 'STORE_ADMIN']).first()
 
             store_obj = booking.outlet.legacy_stores.first() if (booking.outlet and hasattr(booking.outlet, 'legacy_stores')) else Store.objects.first()
+            if not th_user and store_obj:
+                th_user = User.objects.filter(store=store_obj, role='THERAPIST').first()
+
             if store_obj:
                 cust_disp_name = (customer.name if customer and customer.name else request.user.get_full_name()) or "Customer"
-                Review.objects.update_or_create(
-                    store=store_obj,
-                    customer_name=cust_disp_name,
-                    therapist=th_user,
-                    defaults={
-                        "customer_email": getattr(customer, 'email', None) or request.user.email,
-                        "rating": data.get('professional_rating') or data['store_rating'],
-                        "comment": data.get('comment') or "",
-                        "status": 'APPROVED',
-                    }
-                )
+                rev_rating = data.get('professional_rating') or data['store_rating']
+                rev_comment = data.get('comment') or ""
+
+                existing_rev = None
+                if th_user:
+                    existing_rev = Review.objects.filter(store=store_obj, customer_name=cust_disp_name, therapist=th_user).order_by('-created_at').first()
+                else:
+                    existing_rev = Review.objects.filter(store=store_obj, customer_name=cust_disp_name).order_by('-created_at').first()
+
+                if existing_rev:
+                    existing_rev.rating = rev_rating
+                    existing_rev.comment = rev_comment
+                    existing_rev.status = 'APPROVED'
+                    if th_user:
+                        existing_rev.therapist = th_user
+                    existing_rev.save()
+                else:
+                    Review.objects.create(
+                        store=store_obj,
+                        customer_name=cust_disp_name,
+                        therapist=th_user,
+                        customer_email=getattr(customer, 'email', None) or request.user.email,
+                        rating=rev_rating,
+                        comment=rev_comment,
+                        status='APPROVED',
+                    )
         except Exception as rev_err:
             logger.warning("Could not sync review to store Review model: %s", rev_err)
 

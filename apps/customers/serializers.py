@@ -536,5 +536,6 @@ class BookingReviewRequestSerializer(serializers.Serializer):
     store_rating = serializers.IntegerField(min_value=1, max_value=5)
     professional_rating = serializers.IntegerField(min_value=1, max_value=5, required=False, allow_null=True)
     professional_id = serializers.UUIDField(required=False, allow_null=True)
+    therapist_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     comment = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     media_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
