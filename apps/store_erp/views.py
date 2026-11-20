@@ -2658,6 +2658,11 @@ class StoreServiceDetailView(APIView):
             svc.duration_min = int(request.data['duration_min'])
         if 'is_active_in_store' in request.data:
             svc.is_active_in_store = bool(request.data['is_active_in_store'])
+            try:
+                from apps.core.models import Service
+                Service.objects.filter(name__iexact=svc.name).update(is_active=svc.is_active_in_store)
+            except Exception:
+                pass
         if 'deposit_percentage' in request.data:
             svc.deposit_percentage = int(request.data['deposit_percentage'])
         if 'canonical_service_id' in request.data and request.data['canonical_service_id']:
@@ -2679,9 +2684,13 @@ class StoreServiceDetailView(APIView):
 
         svc.is_active_in_store = False
         svc.save(update_fields=['is_active_in_store'])
+        try:
+            from apps.core.models import Service
+            Service.objects.filter(name__iexact=svc.name).update(is_active=False)
+        except Exception:
+            pass
         if outlet:
             bump_availability_version(outlet.id)
-        return success_response({"id": str(pk)}, "Service deactivated successfully")
         return success_response({"id": str(pk)}, "Service deactivated successfully")
 class CustomerLookupView(APIView):
     permission_classes = [IsAuthenticated, IsOutletStaff]

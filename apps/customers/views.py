@@ -99,15 +99,80 @@ class PublicStoreViewSet(viewsets.ReadOnlyModelViewSet):
         return success_response([{"id": r.id, "name": r.name} for r in rooms], f"Rooms for {store.name}")
     @action(detail=True, methods=['get'])
     def menu(self, request, pk=None):
+        from apps.core.models import StoreService, Service
         store = self.get_object()
+        outlet = store.outlet if store.outlet_id else None
+        store_group = outlet.store_group if (outlet and outlet.store_group_id) else None
+
+        # Check for Phase 1 StoreService catalog (managed via StoreAdmin)
+        store_services = None
+        if store_group:
+            store_services = StoreService.objects.filter(
+                store_group=store_group
+            ).select_related('canonical_service', 'canonical_service__category')
+        elif outlet:
+            store_services = StoreService.objects.filter(
+                store_group__outlets=outlet
+            ).select_related('canonical_service', 'canonical_service__category')
+
+        if store_services and store_services.exists():
+            # Exclude paused services (is_active_in_store=False)
+            active_store_services = store_services.filter(is_active_in_store=True).order_by('name')
+            categories_map = {}
+            for ss in active_store_services:
+                cat_name = "General"
+                if ss.canonical_service and ss.canonical_service.category and ss.canonical_service.category.name:
+                    cat_name = ss.canonical_service.category.name
+                else:
+                    leg_svc = Service.objects.filter(name__iexact=ss.name).select_related('category').first()
+                    if leg_svc and leg_svc.category:
+                        cat_name = leg_svc.category.name
+                    else:
+                        cat_name = ss.name
+
+                if cat_name not in categories_map:
+                    categories_map[cat_name] = {
+                        "id": f"cat-{len(categories_map)+1}",
+                        "name": cat_name,
+                        "services": []
+                    }
+                categories_map[cat_name]["services"].append({
+                    "id": str(ss.id),
+                    "name": ss.name,
+                    "price": (ss.default_price_paise or 0) / 100.0,
+                    "duration_minutes": ss.duration_min or 45,
+                    "category_name": cat_name,
+                    "description": (ss.canonical_service.description if (ss.canonical_service and hasattr(ss.canonical_service, 'description')) else "") or "",
+                    "is_premium_listing": False,
+                    "is_active": True,
+                    "is_active_in_store": True,
+                })
+            return success_response(list(categories_map.values()), f"Menu for {store.name}")
+
+        # Fallback to legacy ServiceCategory & Service
+        paused_names = set(StoreService.objects.filter(
+            is_active_in_store=False
+        ).values_list('name', flat=True))
+
         categories = ServiceCategory.objects.filter(
             business=store.business_id,
             is_active=True
         ).prefetch_related(
-            Prefetch('services', queryset=Service.objects.filter(is_active=True))
+            Prefetch('services', queryset=Service.objects.filter(is_active=True).exclude(name__in=paused_names))
         )
-        serializer = PublicServiceCategorySerializer(categories, many=True)
-        return success_response(serializer.data, f"Menu for {store.name}")
+        data = []
+        for cat in categories:
+            svcs = [
+                s for s in cat.services.filter(is_active=True)
+                if s.name not in paused_names
+            ]
+            if svcs:
+                data.append({
+                    "id": cat.id,
+                    "name": cat.name,
+                    "services": PublicServiceSerializer(svcs, many=True).data
+                })
+        return success_response(data, f"Menu for {store.name}")
     @action(detail=True, methods=['get'])
     def staff(self, request, pk=None):
         store = self.get_object()

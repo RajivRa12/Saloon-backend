@@ -66,9 +66,10 @@ class PublicServiceSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     store_id = serializers.SerializerMethodField()
     store_name = serializers.SerializerMethodField()
+    is_active_in_store = serializers.BooleanField(source='is_active', read_only=True)
     class Meta:
         model = Service
-        fields = ['id', 'name', 'price', 'duration_minutes', 'category_name', 'is_premium_listing', 'store_id', 'store_name']
+        fields = ['id', 'name', 'price', 'duration_minutes', 'category_name', 'is_premium_listing', 'store_id', 'store_name', 'is_active', 'is_active_in_store']
     def get_store(self, obj):
         return obj.category.business.stores.filter(status='ACTIVE').first()
     def get_store_id(self, obj):
@@ -83,7 +84,11 @@ class PublicServiceCategorySerializer(serializers.ModelSerializer):
         model = ServiceCategory
         fields = ['id', 'name', 'services']
     def get_services(self, obj):
+        from apps.core.models import StoreService
+        paused_names = set(StoreService.objects.filter(is_active_in_store=False).values_list('name', flat=True))
         services = Service.objects.filter(category=obj, is_active=True)
+        if paused_names:
+            services = services.exclude(name__in=paused_names)
         return PublicServiceSerializer(services, many=True).data
 class PublicReviewSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.first_name', read_only=True)
