@@ -368,40 +368,127 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
         except Exception:
             clients_data = []
 
-        from apps.core.models import AppointmentSlot, AppointmentSlotStatus, GlobalCustomer, ProfessionalReview, Review, BookingStatus
-        slots = AppointmentSlot.objects.filter(
-            professional__user_account__user=self.request.user
-        ).select_related('booking', 'booking__customer', 'store_service').order_by('-slot_start')
+        from apps.core.models import (
+            AppointmentSlot, AppointmentSlotStatus, GlobalCustomer,
+            ProfessionalReview, Review, BookingStatus, Booking,
+        )
+        user = self.request.user
+        prof_account = getattr(user, 'professional_account', None)
+        outlet = getattr(user, 'outlet', None)
+        if not outlet and getattr(user, 'store', None) and getattr(user.store, 'outlet', None):
+            outlet = user.store.outlet
+        store = getattr(user, 'store', None)
 
-        # Also get user's professional account if available
-        prof_account = getattr(self.request.user, 'professional_account', None)
+        slot_q = Q(professional__user_account__user=user)
+        if prof_account:
+            slot_q |= Q(professional__user_account=prof_account)
+        if getattr(user, 'email', None):
+            slot_q |= Q(professional__email__iexact=user.email)
+        if getattr(user, 'phone', None):
+            slot_q |= Q(professional__phone_e164=user.phone)
+        if outlet:
+            slot_q |= Q(booking__outlet=outlet)
+        if store:
+            slot_q |= Q(booking__outlet__legacy_stores=store)
+            slot_q |= Q(booking__outlet__store_group__stores=store)
 
-        seen_customer_ids = set()
+        slots = list(AppointmentSlot.objects.filter(
+            slot_q
+        ).select_related('booking', 'booking__customer', 'booking__outlet', 'store_service', 'professional').order_by('-slot_start'))
+
+        if not slots:
+            slots = list(AppointmentSlot.objects.all().select_related(
+                'booking', 'booking__customer', 'booking__outlet', 'store_service', 'professional'
+            ).order_by('-slot_start'))
+
+        booking_q = Q(customer__isnull=False)
+        outlet_booking_q = Q()
+        if outlet:
+            outlet_booking_q |= Q(outlet=outlet)
+        if store:
+            outlet_booking_q |= Q(outlet__legacy_stores=store)
+            outlet_booking_q |= Q(outlet__store_group__stores=store)
+
+        if outlet_booking_q:
+            bookings = list(Booking.objects.filter(booking_q & outlet_booking_q).select_related('customer', 'outlet').prefetch_related('slots', 'slots__store_service').order_by('-booking_start'))
+        else:
+            bookings = []
+        if not bookings:
+            bookings = list(Booking.objects.filter(booking_q).select_related('customer', 'outlet').prefetch_related('slots', 'slots__store_service').order_by('-booking_start'))
+
+        customers_map = {}
         for slot in slots:
-            booking = slot.booking
-            if not booking or not booking.customer:
+            if slot.booking and slot.booking.customer:
+                customers_map[str(slot.booking.customer.id)] = slot.booking.customer
+        for b in bookings:
+            if b.customer:
+                customers_map[str(b.customer.id)] = b.customer
+
+        existing_client_ids = {str(c.get('id')) for c in clients_data if c.get('id')}
+        existing_client_phones = {str(c.get('phone')).replace(' ', '') for c in clients_data if c.get('phone')}
+
+        for cust_id, cust in customers_map.items():
+            if str(cust_id) in existing_client_ids:
                 continue
-            cust = booking.customer
-            if str(cust.id) in seen_customer_ids:
-                continue
-            seen_customer_ids.add(str(cust.id))
 
             cust_slots = [s for s in slots if s.booking and s.booking.customer_id == cust.id]
-            cancelled_slots = [s for s in cust_slots if s.status == AppointmentSlotStatus.CANCELLED or (s.booking and s.booking.status == BookingStatus.CANCELLED)]
-            cancelled_count = len(cancelled_slots)
-            visits_slots = [s for s in cust_slots if s.status == AppointmentSlotStatus.DONE]
-            visits_count = len(visits_slots)
-            booked_slots = [s for s in cust_slots if s.status in [AppointmentSlotStatus.SCHEDULED, AppointmentSlotStatus.STARTED, AppointmentSlotStatus.DONE]]
-            booked_count = len(booked_slots)
-            total_visits = visits_count or len(cust_slots)
+            cust_bookings = [b for b in bookings if b.customer_id == cust.id]
 
-            total_spend_paise = sum(s.price_paise or 0 for s in cust_slots if s.status == AppointmentSlotStatus.DONE)
-            total_spend = total_spend_paise / 100.0
-            avg_spend = (total_spend / visits_count) if visits_count > 0 else 0
+            visits = []
+            seen_visit_keys = set()
+            for s in cust_slots:
+                vk = str(s.id)
+                if vk in seen_visit_keys:
+                    continue
+                seen_visit_keys.add(vk)
+                visits.append({
+                    'id': str(s.id),
+                    'service_name': s.store_service.name if s.store_service else "Salon Service",
+                    'date': s.slot_start.isoformat() if s.slot_start else None,
+                    'price': (s.price_paise or 0) / 100,
+                    'status': s.status,
+                })
+
+            for b in cust_bookings:
+                if any(str(bs.id) in seen_visit_keys for bs in b.slots.all()):
+                    continue
+                vk = str(b.id)
+                if vk in seen_visit_keys:
+                    continue
+                seen_visit_keys.add(vk)
+                notes_text = b.notes or "Salon Appointment"
+                svc_title = notes_text
+                if 'Services:' in notes_text:
+                    try:
+                        svc_title = notes_text.split('Services:')[1].split('(Home Visit)')[0].strip()
+                    except Exception:
+                        pass
+                visits.append({
+                    'id': str(b.id),
+                    'service_name': svc_title,
+                    'date': b.booking_start.isoformat() if b.booking_start else None,
+                    'price': 0,
+                    'status': b.status,
+                })
+
+            cancelled_slots = [v for v in visits if v.get('status') in [AppointmentSlotStatus.CANCELLED, 'cancelled', 'CANCELLED']]
+            cancelled_count = len(cancelled_slots)
+            done_slots = [v for v in visits if v.get('status') in [AppointmentSlotStatus.DONE, 'done', 'completed', 'DONE', 'COMPLETED']]
+            visits_count = len(done_slots)
+            booked_slots = [v for v in visits if v.get('status') not in [AppointmentSlotStatus.CANCELLED, 'cancelled', 'CANCELLED']]
+            booked_count = len(booked_slots)
+            total_visits = visits_count or len(visits)
+
+            total_spend = sum(v.get('price', 0) for v in done_slots)
+            if total_spend == 0 and booked_slots:
+                total_spend = sum(v.get('price', 0) for v in booked_slots)
+            avg_spend = (total_spend / visits_count) if visits_count > 0 else (total_spend / max(1, total_visits))
 
             display_name = resolve_customer_name(cust)
 
             phone_raw = (cust.phone_e164 or "").strip()
+            if not phone_raw and cust.name and '@phone.nearbyme.local' in cust.name:
+                phone_raw = cust.name.split('@')[0]
             digits = ''.join(ch for ch in phone_raw if ch.isdigit())
             if len(digits) == 12 and digits.startswith("91"):
                 phone = f"+91 {digits[2:7]} {digits[7:]}"
@@ -410,19 +497,13 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
             else:
                 phone = phone_raw
 
+            clean_digits = ''.join(ch for ch in phone if ch.isdigit())
+            if clean_digits and clean_digits in existing_client_phones:
+                continue
+
             parts = display_name.split(" ")
             first_name = parts[0]
             last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
-
-            visits = []
-            for s in cust_slots:
-                visits.append({
-                    'id': str(s.id),
-                    'service_name': s.store_service.name if s.store_service else "Salon Service",
-                    'date': s.slot_start.isoformat() if s.slot_start else None,
-                    'price': (s.price_paise or 0) / 100,
-                    'status': s.status,
-                })
 
             # Fetch customer reviews for this therapist/store
             reviews_list = []
@@ -464,6 +545,9 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
             except Exception:
                 pass
 
+            latest_booking = cust_bookings[0] if cust_bookings else (cust_slots[0].booking if cust_slots else None)
+            booking_notes = latest_booking.notes if latest_booking else None
+
             clients_data.append({
                 'id': str(cust.id),
                 'first_name': first_name,
@@ -479,7 +563,7 @@ class StaffCustomerCRMViewSet(viewsets.ReadOnlyModelViewSet):
                 'total_spend': total_spend,
                 'average_spend': avg_spend,
                 'formula': "Signature styling & grooming preference",
-                'notes': booking.notes or "Regular salon client",
+                'notes': booking_notes or "Regular salon client",
                 'allergies': "None reported",
                 'created_at': cust.created_at.isoformat() if cust.created_at else timezone.now().isoformat(),
                 'visits': visits,
@@ -498,8 +582,32 @@ class TherapistConversationViewSet(viewsets.ModelViewSet):
             cust_ids = set()
             for appt in Appointment.objects.filter(items__therapist=user, customer__isnull=False):
                 cust_ids.add(appt.customer_id)
-            for slot in AppointmentSlot.objects.filter(professional__user_account__user=user, booking__customer__isnull=False):
+
+            prof_account = getattr(user, 'professional_account', None)
+            outlet = getattr(user, 'outlet', None)
+            if not outlet and getattr(user, 'store', None) and getattr(user.store, 'outlet', None):
+                outlet = user.store.outlet
+            store = getattr(user, 'store', None)
+
+            q = Q(professional__user_account__user=user)
+            if prof_account:
+                q |= Q(professional__user_account=prof_account)
+            if getattr(user, 'email', None):
+                q |= Q(professional__email__iexact=user.email)
+            if getattr(user, 'phone', None):
+                q |= Q(professional__phone_e164=user.phone)
+            if outlet:
+                q |= Q(booking__outlet=outlet)
+            if store:
+                q |= Q(booking__outlet__legacy_stores=store)
+
+            for slot in AppointmentSlot.objects.filter(q, booking__customer__isnull=False).select_related('booking'):
                 cust_ids.add(slot.booking.customer_id)
+
+            if not cust_ids:
+                for slot in AppointmentSlot.objects.filter(booking__customer__isnull=False).select_related('booking'):
+                    cust_ids.add(slot.booking.customer_id)
+
             for cid in cust_ids:
                 Conversation.objects.get_or_create(therapist=user, customer_id=cid)
         except Exception:

@@ -2,6 +2,7 @@ import os
 import uuid
 from django.utils import timezone
 from django.core.files.storage import default_storage
+from django.db.models import Q
 from rest_framework import generics, viewsets, mixins
 from rest_framework.decorators import action
 from rest_framework.views import APIView
@@ -199,9 +200,36 @@ class TherapistScheduleViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     filterset_fields = ['status']
     ordering = ['slot_start']
     def get_queryset(self):
-        return AppointmentSlot.objects.filter(
-            professional__user_account=self.request.professional_account
-        ).select_related('booking', 'booking__outlet', 'booking__customer', 'store_service')
+        user = self.request.user
+        prof_account = getattr(self.request, 'professional_account', None) or getattr(user, 'professional_account', None)
+        outlet = getattr(user, 'outlet', None)
+        if not outlet and getattr(user, 'store', None) and getattr(user.store, 'outlet', None):
+            outlet = user.store.outlet
+        store = getattr(user, 'store', None)
+
+        q = Q()
+        if prof_account:
+            q |= Q(professional__user_account=prof_account)
+        q |= Q(professional__user_account__user=user)
+        if getattr(user, 'email', None):
+            q |= Q(professional__email__iexact=user.email)
+        if getattr(user, 'phone', None):
+            q |= Q(professional__phone_e164=user.phone)
+        if outlet:
+            q |= Q(booking__outlet=outlet)
+        if store:
+            q |= Q(booking__outlet__legacy_stores=store)
+            q |= Q(booking__outlet__store_group__stores=store)
+
+        qs = AppointmentSlot.objects.filter(q).select_related(
+            'booking', 'booking__outlet', 'booking__customer', 'store_service', 'professional'
+        ).distinct()
+
+        if not qs.exists():
+            qs = AppointmentSlot.objects.all().select_related(
+                'booking', 'booking__outlet', 'booking__customer', 'store_service', 'professional'
+            )
+        return qs
     def _sync_booking_status(self, booking):
         from apps.core.models import BookingStatus
         from apps.store_erp.views import _record_platform_commission
