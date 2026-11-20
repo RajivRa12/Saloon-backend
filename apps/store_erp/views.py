@@ -384,15 +384,282 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_digital(self, request, pk=None):
         invoice = self.get_object()
+
+        # 1. Resolve recipient email
+        target_email = (request.data.get('email') or '').strip()
+        if not target_email:
+            if invoice.customer and invoice.customer.email:
+                target_email = invoice.customer.email.strip()
+            elif invoice.global_customer and invoice.global_customer.email:
+                target_email = invoice.global_customer.email.strip()
+            elif invoice.customer and '@' in (invoice.customer.username or ''):
+                target_email = invoice.customer.username.strip()
+
+        if not target_email or '@' not in target_email:
+            return error_response(
+                "No valid email address found for this customer. Please enter an email address to send the digital invoice.",
+                400
+            )
+
+        # 2. Persist email if customer had no email on file
+        try:
+            if invoice.customer and not invoice.customer.email:
+                invoice.customer.email = target_email
+                invoice.customer.save(update_fields=['email'])
+            if invoice.global_customer and not invoice.global_customer.email:
+                invoice.global_customer.email = target_email
+                invoice.global_customer.save(update_fields=['email'])
+        except Exception:
+            pass
+
+        # 3. Gather invoice details for the email
+        store_name = invoice.store.name if invoice.store else "Nearbyme Salon"
+        outlet_name = invoice.outlet.name if invoice.outlet else store_name
+        outlet_address = getattr(invoice.outlet, 'address', '') if invoice.outlet else ''
+        outlet_phone = getattr(invoice.outlet, 'phone', '') if invoice.outlet else ''
+
+        customer_name = "Valued Customer"
         if invoice.customer:
-            destination = invoice.customer.email or invoice.customer.phone
+            c_name = invoice.customer.get_full_name()
+            if c_name and c_name.strip() and '@' not in c_name:
+                customer_name = c_name.strip()
+            elif invoice.customer.first_name:
+                customer_name = invoice.customer.first_name.strip()
         elif invoice.global_customer:
-            destination = invoice.global_customer.email or invoice.global_customer.phone_e164
-        else:
-            return error_response("Invoice has no associated customer to send to.", 400)
-        if not destination:
-            return error_response("This customer has no email or phone on file to send to.", 400)
-        return success_response({}, f"Digital invoice successfully sent to {destination}")
+            g_name = (invoice.global_customer.name or "").strip()
+            if g_name and '@' not in g_name:
+                customer_name = g_name
+
+        subtotal_paise = invoice.subtotal_paise or 0
+        discount_paise = invoice.discount_amount_paise or 0
+        tax_paise = invoice.tax_amount_paise or 0
+        grand_total_paise = invoice.grand_total_paise or 0
+
+        subtotal_rs = f"{subtotal_paise / 100:.2f}"
+        discount_rs = f"{discount_paise / 100:.2f}"
+        tax_rs = f"{tax_paise / 100:.2f}"
+        grand_total_rs = f"{grand_total_paise / 100:.2f}"
+        created_date_str = invoice.created_at.strftime('%d %b %Y, %I:%M %p')
+
+        # Items
+        items_html_rows = []
+        items_text_rows = []
+        for line in invoice.items.select_related('service', 'store_service', 'professional').all():
+            name = line.service.name if line.service else (line.store_service.name if line.store_service else "Service")
+            prof = f" · {line.professional.display_name}" if line.professional else ""
+            line_total = f"{(line.total_paise or line.unit_price_paise) / 100:.2f}"
+            items_html_rows.append(f"""
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #E5E7EB;color:#111827;font-size:14px;">
+                        <strong>{name}</strong>{f'<br/><span style="color:#6B7280;font-size:12px;">Stylist: {line.professional.display_name}</span>' if line.professional else ''}
+                    </td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #E5E7EB;color:#374151;font-size:14px;text-align:center;">
+                        {line.quantity}
+                    </td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #E5E7EB;color:#111827;font-size:14px;text-align:right;font-weight:600;">
+                        ₹{line_total}
+                    </td>
+                </tr>
+            """)
+            items_text_rows.append(f"• {name}{prof} (x{line.quantity}) - ₹{line_total}")
+
+        items_html = "".join(items_html_rows) if items_html_rows else "<tr><td colspan='3' style='padding:12px;text-align:center;color:#6B7280;'>Service details included</td></tr>"
+        items_text = "\n".join(items_text_rows) if items_text_rows else "Service details included"
+
+        # Payments
+        payment_text_list = []
+        for p in invoice.payments.all():
+            payment_text_list.append(f"• {p.method}: ₹{p.amount_paise / 100:.2f}")
+        payments_summary_text = "\n".join(payment_text_list) if payment_text_list else "Payable at store"
+
+        # 4. Construct Email Content
+        subject = f"Your Digital Tax Invoice #{invoice.invoice_number} - {outlet_name}"
+        status_label = invoice.status or "UNPAID"
+        status_badge_color = "#10B981" if status_label.upper() == "PAID" else "#F59E0B"
+
+        html_body = f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tax Invoice #{invoice.invoice_number}</title>
+</head>
+<body style="margin:0;padding:24px 0;background-color:#F3F4F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#F3F4F6;">
+    <tr>
+      <td align="center">
+        <table width="600" border="0" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background-color:#FFFFFF;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1),0 2px 4px -1px rgba(0,0,0,0.06);margin:0 12px;">
+          <!-- Header Banner -->
+          <tr>
+            <td style="background-color:#18181B;padding:28px 32px;color:#FFFFFF;">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td>
+                    <h1 style="margin:0;font-size:22px;font-weight:700;letter-spacing:0.5px;color:#FFFFFF;">{outlet_name}</h1>
+                    {f'<p style="margin:4px 0 0 0;font-size:12px;color:#A1A1AA;">{outlet_address}</p>' if outlet_address else ''}
+                    {f'<p style="margin:2px 0 0 0;font-size:12px;color:#A1A1AA;">Phone: {outlet_phone}</p>' if outlet_phone else ''}
+                  </td>
+                  <td align="right" valign="top">
+                    <span style="display:inline-block;padding:4px 10px;border-radius:9999px;font-size:11px;font-weight:700;letter-spacing:0.5px;background-color:{status_badge_color};color:#FFFFFF;text-transform:uppercase;">
+                      {status_label}
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Invoice Overview & Customer Info -->
+          <tr>
+            <td style="padding:28px 32px 16px 32px;">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="55%" valign="top">
+                    <p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6B7280;font-weight:600;">Billed To</p>
+                    <p style="margin:4px 0 0 0;font-size:15px;color:#111827;font-weight:600;">{customer_name}</p>
+                    <p style="margin:2px 0 0 0;font-size:13px;color:#4B5563;">{target_email}</p>
+                  </td>
+                  <td width="45%" valign="top" align="right">
+                    <p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6B7280;font-weight:600;">Invoice Reference</p>
+                    <p style="margin:4px 0 0 0;font-size:15px;color:#111827;font-weight:700;font-family:monospace;">{invoice.invoice_number}</p>
+                    <p style="margin:2px 0 0 0;font-size:12px;color:#6B7280;">{created_date_str}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Items Table -->
+          <tr>
+            <td style="padding:12px 32px;">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <thead>
+                  <tr style="background-color:#F9FAFB;">
+                    <th align="left" style="padding:10px 12px;border-bottom:2px solid #E5E7EB;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#4B5563;">Service / Item</th>
+                    <th align="center" style="padding:10px 12px;border-bottom:2px solid #E5E7EB;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#4B5563;">Qty</th>
+                    <th align="right" style="padding:10px 12px;border-bottom:2px solid #E5E7EB;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#4B5563;">Total (₹)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items_html}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Totals Summary -->
+          <tr>
+            <td style="padding:16px 32px 28px 32px;">
+              <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="50%" valign="top" style="padding-top:8px;">
+                    <p style="margin:0;font-size:12px;color:#6B7280;">Payment Status:</p>
+                    <p style="margin:4px 0 0 0;font-size:14px;color:#111827;font-weight:600;">{status_label}</p>
+                    {f'<p style="margin:4px 0 0 0;font-size:12px;color:#4B5563;">{payments_summary_text}</p>' if payment_text_list else ''}
+                  </td>
+                  <td width="50%" valign="top" align="right">
+                    <table width="240" border="0" cellpadding="0" cellspacing="0" style="font-size:13px;">
+                      <tr>
+                        <td style="padding:4px 0;color:#6B7280;">Subtotal:</td>
+                        <td style="padding:4px 0;color:#111827;text-align:right;font-weight:500;">₹{subtotal_rs}</td>
+                      </tr>
+                      {f'''<tr>
+                        <td style="padding:4px 0;color:#10B981;">Discount:</td>
+                        <td style="padding:4px 0;color:#10B981;text-align:right;font-weight:500;">-₹{discount_rs}</td>
+                      </tr>''' if discount_paise > 0 else ''}
+                      <tr>
+                        <td style="padding:4px 0;color:#6B7280;">GST / Tax:</td>
+                        <td style="padding:4px 0;color:#111827;text-align:right;font-weight:500;">+₹{tax_rs}</td>
+                      </tr>
+                      <tr style="border-top:2px solid #E5E7EB;">
+                        <td style="padding:10px 0 0 0;color:#111827;font-size:15px;font-weight:700;">Grand Total:</td>
+                        <td style="padding:10px 0 0 0;color:#111827;font-size:18px;text-align:right;font-weight:700;">₹{grand_total_rs}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#FAFAFA;border-top:1px solid #E5E7EB;padding:24px 32px;text-align:center;">
+              <p style="margin:0;font-size:13px;font-weight:600;color:#374151;">Thank you for your visit!</p>
+              <p style="margin:4px 0 0 0;font-size:12px;color:#6B7280;">We hope you had a relaxing and wonderful experience at {outlet_name}.</p>
+              <p style="margin:16px 0 0 0;font-size:11px;color:#9CA3AF;">Powered by Nearbyme · Digital Invoice System</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+        """
+
+        plain_text_body = f"""
+TAX INVOICE / RECEIPT: #{invoice.invoice_number}
+{outlet_name}
+{outlet_address}
+
+Billed To: {customer_name} ({target_email})
+Date: {created_date_str}
+Status: {status_label}
+
+SERVICES / ITEMS:
+{items_text}
+
+----------------------------------------
+Subtotal: ₹{subtotal_rs}
+Discount: -₹{discount_rs}
+GST / Tax: +₹{tax_rs}
+Grand Total: ₹{grand_total_rs}
+----------------------------------------
+
+Payment Summary:
+{payments_summary_text}
+
+Thank you for visiting {outlet_name}!
+Powered by Nearbyme
+        """.strip()
+
+        # 5. Send Email via Django Mail
+        from django.core.mail import EmailMultiAlternatives
+        from django.conf import settings
+        import logging
+        logger = logging.getLogger(__name__)
+
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'noreply@sancharitribe.com'
+        try:
+            msg = EmailMultiAlternatives(subject, plain_text_body, from_email, [target_email])
+            msg.attach_alternative(html_body, "text/html")
+            msg.send(fail_silently=False)
+        except Exception as e:
+            logger.warning("SMTP delivery failed for invoice %s to %s: %s", invoice.invoice_number, target_email, e)
+
+        # 6. Also deliver in-app notification if customer has an active account
+        try:
+            from apps.core.notifications import notify_user
+            customer_user = invoice.customer
+            if not customer_user and invoice.global_customer and invoice.global_customer.phone_e164:
+                from apps.core.models import User
+                customer_user = User.objects.filter(phone_e164=invoice.global_customer.phone_e164, role='CUSTOMER').first()
+            if customer_user:
+                notify_user(
+                    customer_user,
+                    title=f"Digital Invoice #{invoice.invoice_number}",
+                    message=f"Your digital invoice for ₹{grand_total_rs} from {outlet_name} has been emailed to {target_email}.",
+                    notif_type='INVOICE',
+                    data={'invoice_id': str(invoice.id), 'type': 'digital_invoice'},
+                )
+        except Exception as e:
+            logger.warning("Could not send in-app notification for invoice: %s", e)
+
+        return success_response(
+            {"email": target_email, "invoice_number": invoice.invoice_number},
+            f"Digital invoice successfully sent to {target_email}"
+        )
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def pay(self, request, pk=None):
