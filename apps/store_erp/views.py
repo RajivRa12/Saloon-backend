@@ -1038,16 +1038,89 @@ class DashboardViewSet(viewsets.ViewSet):
     def list(self, request):
         today = timezone.localtime().date()
         yesterday = today - datetime.timedelta(days=1)
-        store = request.user.store
-        today_appointments = Appointment.objects.filter(store=store, start_time__date=today) if store else Appointment.objects.none()
+        user = request.user
+
+        # Resolve store & outlet taking X-Store-Id into account
+        store_id = request.headers.get('X-Store-Id') or request.META.get('HTTP_X_STORE_ID')
+        store = None
+        if store_id:
+            try:
+                from apps.core.models import Store
+                store = Store.objects.filter(id=int(store_id)).select_related('outlet').first()
+            except Exception:
+                pass
+        if not store:
+            store = getattr(user, 'store', None) or (user.outlet.legacy_stores.first() if getattr(user, 'outlet', None) else None)
+        outlet = getattr(store, 'outlet', None) or getattr(user, 'outlet', None)
+        if not store and outlet and hasattr(outlet, 'legacy_stores'):
+            store = outlet.legacy_stores.first()
+        if not store:
+            store = Store.objects.first()
+        if not outlet and store:
+            outlet = getattr(store, 'outlet', None)
+
+        appt_q = Q(start_time__date=today)
+        if store and outlet:
+            appt_q &= (Q(store=store) | Q(outlet=outlet))
+        elif store:
+            appt_q &= Q(store=store)
+        elif outlet:
+            appt_q &= Q(outlet=outlet)
+        today_appointments = Appointment.objects.filter(appt_q)
         appointments_count = today_appointments.exclude(status=AppointmentStatus.CANCELLED).count()
         walk_in_count = today_appointments.filter(source='WALK_IN').count()
         cancelled_count = today_appointments.filter(status=AppointmentStatus.CANCELLED).count()
-        today_invoices = Invoice.objects.filter(store=store, created_at__date=today) if store else Invoice.objects.none()
+
+        inv_q = Q(created_at__date=today)
+        if store and outlet:
+            inv_q &= (Q(store=store) | Q(outlet=outlet))
+        elif store:
+            inv_q &= Q(store=store)
+        elif outlet:
+            inv_q &= Q(outlet=outlet)
+        today_invoices = Invoice.objects.filter(inv_q)
+
         revenue_today = Decimal(today_invoices.filter(status=InvoiceStatus.PAID).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         pending_payments = Decimal(today_invoices.filter(status__in=[InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]).aggregate(Sum('grand_total_paise'))['grand_total_paise__sum'] or 0) / 100
         today_tips = Tip.objects.filter(invoice__store=store, created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or Decimal('0.00') if store else Decimal('0.00')
-        staff_attendance = Attendance.objects.filter(store=store, date=today, status='PRESENT', clock_in__isnull=False, clock_out__isnull=True).count() if store else 0
+
+        # Staff attendance query: count any staff marked PRESENT/HALF_DAY today or currently clocked in
+        attendance_q = Q(date=today)
+        if store and outlet:
+            attendance_q &= (Q(store=store) | Q(outlet=outlet))
+        elif store:
+            attendance_q &= Q(store=store)
+        elif outlet:
+            attendance_q &= Q(outlet=outlet)
+
+        present_attendance_q = attendance_q & (
+            Q(status__in=['PRESENT', 'HALF_DAY']) |
+            (Q(clock_in__isnull=False) & Q(clock_out__isnull=True))
+        )
+        present_attendance_q &= ~Q(status='ABSENT')
+
+        present_records = (
+            Attendance.objects.filter(present_attendance_q)
+            .select_related('staff')
+            .order_by('-clock_in', '-id')
+        )
+        seen_staff = set()
+        present_staff_list = []
+        for att in present_records:
+            if att.staff_id in seen_staff:
+                continue
+            seen_staff.add(att.staff_id)
+            staff_user = att.staff
+            time_str = att.clock_in.strftime('%I:%M %p') if att.clock_in else "Marked Present"
+            role_label = staff_user.get_role_display() if hasattr(staff_user, 'get_role_display') else (staff_user.role or "Staff")
+            present_staff_list.append({
+                "id": staff_user.id,
+                "name": staff_user.get_full_name() or staff_user.first_name or "Staff Member",
+                "role": role_label,
+                "status": att.status,
+                "time": time_str,
+            })
+        staff_attendance = len(present_staff_list)
         now = timezone.now()
         busy_therapists = AppointmentItem.objects.filter(
             appointment__store=store,
@@ -1254,6 +1327,7 @@ class DashboardViewSet(viewsets.ViewSet):
             "today_tips": today_tips,
             "staff_present": staff_attendance,
             "staff_attendance": staff_attendance,
+            "present_staff_list": present_staff_list,
             "available_therapists": available_therapists,
             "low_stock_alerts": low_stock_count,
             "repeat_customers": repeat_customers_count,
