@@ -1523,6 +1523,27 @@ class WaitlistViewSet(viewsets.ModelViewSet):
             preferred_time_slot=data.get('preferred_time_slot', 'Morning'),
             status=data.get('status', 'WAITING'),
         )
+
+        # Notify the customer they've been added to the waitlist
+        try:
+            from apps.core.notifications import notify_user
+            if customer_obj and customer_obj.role == 'CUSTOMER':
+                service_name = service_obj.name if service_obj else "your service"
+                store_name = request.user.store.name if request.user.store else "our salon"
+                preferred_date = data.get('preferred_date', '')
+                time_slot = data.get('preferred_time_slot', 'Morning')
+                date_str = f" on {preferred_date}" if preferred_date else ""
+                notify_user(
+                    customer_obj,
+                    title="You're on the Waitlist! 📋",
+                    message=f"You've been added to the waitlist for {service_name} at {store_name}{date_str} ({time_slot}). We'll notify you as soon as a slot opens up.",
+                    notif_type='WAITLIST',
+                    data={'waitlist_id': str(waitlist.id), 'type': 'waitlist_added'},
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Could not notify customer of waitlist add: %s", e)
+
         return success_response(WaitlistSerializer(waitlist).data, "Waitlist entry created", 201)
 from apps.core.models import Invoice, InvoiceStatus, Appointment
 from .serializers import CustomerCRMDataSerializer
