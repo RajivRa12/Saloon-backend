@@ -2216,7 +2216,7 @@ def _resolve_store_service_outlet(request):
     return Outlet.objects.first()
 
 class StoreServiceListView(APIView):
-    permission_classes = [IsAuthenticated, IsOutletStaff]
+    permission_classes = [IsAuthenticated, IsStoreStaff]
     def get(self, request):
         outlet = _resolve_store_service_outlet(request)
         store_group_id = outlet.store_group_id if outlet else None
@@ -2275,7 +2275,7 @@ class StoreServiceListView(APIView):
         return success_response(StoreServiceLiteSerializer(svc).data, "Service created successfully", status_code=201)
 
 class StoreServiceDetailView(APIView):
-    permission_classes = [IsAuthenticated, IsOutletStaff]
+    permission_classes = [IsAuthenticated, IsStoreStaff]
     def patch(self, request, pk):
         outlet = _resolve_store_service_outlet(request)
         svc = StoreService.objects.filter(id=pk).first()
